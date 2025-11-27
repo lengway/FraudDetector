@@ -11,6 +11,7 @@ import pickle
 from catboost import CatBoostClassifier
 from typing import Dict, List, Tuple
 import warnings
+import config  # Import centralized config
 warnings.filterwarnings('ignore')
 
 
@@ -129,24 +130,24 @@ class FraudDetector:
     
     @staticmethod
     def _get_risk_level(probability: float) -> str:
-        """Determine risk level based on fraud probability"""
-        if probability < 0.3:
+        """Determine risk level based on fraud probability (using config thresholds)"""
+        if probability < config.THRESHOLDS['low']:
             return "LOW"
-        elif probability < 0.6:
+        elif probability < config.THRESHOLDS['medium']:
             return "MEDIUM"
-        elif probability < 0.8:
+        elif probability < config.THRESHOLDS['high']:
             return "HIGH"
         else:
             return "CRITICAL"
     
     @staticmethod
     def _get_recommendation(probability: float) -> str:
-        """Get action recommendation based on fraud probability"""
-        if probability < 0.3:
+        """Get action recommendation based on fraud probability (using config thresholds)"""
+        if probability < config.THRESHOLDS['low']:
             return "APPROVE"
-        elif probability < 0.6:
+        elif probability < config.THRESHOLDS['medium']:
             return "REVIEW"
-        elif probability < 0.8:
+        elif probability < config.THRESHOLDS['high']:
             return "ADDITIONAL_VERIFICATION"
         else:
             return "BLOCK"

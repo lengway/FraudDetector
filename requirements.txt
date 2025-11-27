@@ -16,3 +16,6 @@ ipykernel>=6.25.0
 streamlit>=1.28.0
 fastapi>=0.104.0
 uvicorn>=0.24.0
+
+# Ray для распределенного HP tuning (опционально, требует Python <= 3.12)
+ray[default]>=2.8.0

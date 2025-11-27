@@ -1,96 +1,131 @@
 """
-🎯 CatBoost Fraud Detection - Hybrid Version
-ForteBank Hackathon - Optimized for F1 / Fraud Detection
-
-MAJOR REVISION: Feature Engineering and Model Complexity.
-1. Target Encoding REMOVED: Relying on CatBoost's superior, leak-free native handling of categorical features.
-2. NEW Feature: `amount_to_avg_ratio` - Calculates deviation from user's typical transaction amount, 
-   a key indicator of abnormal financial behavior.
-3. Increased Model Depth: Depth increased from 6 to 8 to capture more complex feature interactions.
-4. TUNING: Increased learning_rate (0.05) and l2_leaf_reg for faster convergence and better generalization.
+CatBoost Fraud Detection - Hybrid Version
+ForteBank Hackathon - Optimized for F1-Score (Best Balance of Precision and Recall)
 """
 
+import os
+import warnings
+import itertools
 import pandas as pd
 import numpy as np
-import warnings
-import os
 import pickle
 from catboost import CatBoostClassifier, Pool
-from sklearn.model_selection import StratifiedKFold, train_test_split
-from sklearn.metrics import precision_recall_curve, f1_score, classification_report, confusion_matrix, roc_auc_score
+from sklearn.model_selection import train_test_split, StratifiedKFold
+from sklearn.metrics import (
+    precision_recall_curve,
+    f1_score,
+    precision_score,
+    recall_score,
+    classification_report,
+    confusion_matrix,
+    roc_auc_score,
+)
+import config  # src/config.py
+from feature_utils import add_composite_features
 
-# Игнорируем предупреждения для чистоты вывода
 warnings.filterwarnings('ignore')
 
-# --- Helper to clean columns ---
+# Determine task_type based on GPU availability and config
+def get_task_type():
+    """Automatically detect GPU availability and return task_type for CatBoost."""
+    if not config.USE_GPU:
+        return 'CPU'
+    
+    try:
+        # Try to import CatBoost GPU support
+        from catboost import CatBoostClassifier
+        test_model = CatBoostClassifier(iterations=1, task_type='GPU', devices=f'{config.GPU_DEVICE_ID}', verbose=False)
+        # Quick test to verify GPU works
+        import numpy as np
+        X_test = np.random.rand(10, 5)
+        y_test = np.random.randint(0, 2, 10)
+        test_model.fit(X_test, y_test, verbose=False)
+        print("✅ GPU detected and available for training")
+        return 'GPU'
+    except Exception as e:
+        print(f"⚠️ GPU requested but not available ({e}), falling back to CPU")
+        return 'CPU'
+
+TASK_TYPE = get_task_type()  # Determine once at module load
+GPU_PARAMS = {'devices': f'{config.GPU_DEVICE_ID}'} if TASK_TYPE == 'GPU' else {}
+
+# ---------------------------------------------------------------------------
+# Helper to clean column names
+# ---------------------------------------------------------------------------
 def clean_columns(df):
-    """Удаление пробелов и BOM-маркеров из названий колонок"""
-    df.columns = df.columns.astype(str).str.strip().str.replace('\ufeff', '').str.replace('"', '')
+    """Remove spaces and BOM markers from column names."""
+    df.columns = (
+        df.columns.astype(str)
+        .str.strip()
+        .str.replace('\\ufeff', '')
+        .str.replace('"', '')
+    )
     return df
 
-# --- Global list of expected numeric columns from data sources ---
+# ---------------------------------------------------------------------------
+# Expected numeric columns (used for type coercion)
+# ---------------------------------------------------------------------------
 NUMERIC_COLS = [
-    'amount', 
-    'os_count_30d', 'device_count_30d', 
-    'logins_7d', 'logins_30d', 
-    'avg_logins_7d', 'avg_logins_30d', 
+    'amount',
+    'os_count_30d', 'device_count_30d',
+    'logins_7d', 'logins_30d',
+    'avg_logins_7d', 'avg_logins_30d',
     'avg_login_interval', 'std_login_interval',
-    'rel_freq_change_7_30d', 
-    'login_share_7_30d', 
-    'weighted_avg_interval_7d', 
-    'login_volatility_factor', 
-    'fano_factor_interval', 
+    'rel_freq_change_7_30d',
+    'login_share_7_30d',
+    'weighted_avg_interval_7d',
+    'login_volatility_factor',
+    'fano_factor_interval',
     'z_score_avg_interval_7d_vs_30d',
-    'interval_variance_30d'
+    'interval_variance_30d',
 ]
 
-# --- Load & Clean Data ---
+# ---------------------------------------------------------------------------
+# Data loading and cleaning
+# ---------------------------------------------------------------------------
 def load_and_clean_data():
-    print("📊 Загрузка данных...")
-
-    # 1. TRANSACTIONS (Транзакции)
+    print("📊 Loading data...")
+    # Load transactions
     try:
         df_trans = pd.read_csv(
             'транзакции в Мобильном интернет Банкинге.csv',
-            sep=';', 
-            encoding='cp1251', 
+            sep=';',
+            encoding='cp1251',
             header=1,
-            engine='python'
+            engine='python',
         )
     except FileNotFoundError:
         df_trans = pd.read_csv(
             'docs/транзакции в Мобильном интернет Банкинге.csv',
-            sep=';', 
-            encoding='cp1251', 
+            sep=';',
+            encoding='cp1251',
             header=1,
-            engine='python'
+            engine='python',
         )
-    
     df_trans = clean_columns(df_trans)
 
-    # 2. BEHAVIOR (Поведенческие паттерны)
+    # Load behavioral patterns
     try:
         df_behavior = pd.read_csv(
             'поведенческие паттерны клиентов.csv',
-            sep=';', 
-            encoding='cp1251', 
+            sep=';',
+            encoding='cp1251',
             header=0,
             engine='python',
-            on_bad_lines='skip'
+            on_bad_lines='skip',
         )
     except FileNotFoundError:
         df_behavior = pd.read_csv(
             'docs/поведенческие паттерны клиентов.csv',
-            sep=';', 
-            encoding='cp1251', 
+            sep=';',
+            encoding='cp1251',
             header=0,
             engine='python',
-            on_bad_lines='skip'
+            on_bad_lines='skip',
         )
-
     df_behavior = clean_columns(df_behavior)
 
-    # --- RENAME COLUMNS (Переименование колонок) ---
+    # Rename columns for consistency
     behav_map = {
         'Уникальный идентификатор клиента': 'cst_dim_id',
         'Дата совершенной транзакции': 'transdate',
@@ -99,7 +134,7 @@ def load_and_clean_data():
         'Модель телефона из самой последней сессии (по времени) перед transdate': 'last_phone_model',
         'Версия ОС из самой последней сессии перед transdate': 'last_os_ver',
         'Количество уникальных логин-сессий (минутных тайм-слотов) за последние 7 дней до transdate': 'logins_7d',
-        'Количество уникальных логин-сессий за последние 30 дней до transdate': 'logins_30d',
+        'Количество уникальных логин-сессий за последние 30 дней до транзакции': 'logins_30d',
         'Среднее число логинов в день за последние 7 дней: logins_last_7_days / 7': 'avg_logins_7d',
         'Среднее число логинов в день за последние 30 дней: logins_last_30_days / 30': 'avg_logins_30d',
         'Относительное изменение частоты логинов за 7 дней к средней частоте за 30 дней:\n(freq7d?freq30d)/freq30d(freq_{7d} - freq_{30d}) / freq_{30d}(freq7d?freq30d)/freq30d — показывает, стал клиент заходить чаще или реже недавно': 'rel_freq_change_7_30d',
@@ -112,227 +147,387 @@ def load_and_clean_data():
         'Экспоненциально взвешенное среднее интервалов между логинами за 7 дней, где более свежие сессии имеют больший вес (коэффициент затухания 0.3)': 'weighted_avg_interval_7d',
         'Дисперсия интервалов между логинами за 30 дней (в секундах?), ещё одна мера разброса': 'interval_variance_30d',
     }
-    
     df_behavior.rename(columns=behav_map, inplace=True)
-    
-    # --- INITIAL FIX: FORCE NUMERIC TYPES ON SOURCE DFs (Принудительная конвертация в числовой формат) ---
+
+    # Force numeric types on known columns
     for df_temp in [df_trans, df_behavior]:
         for col in NUMERIC_COLS:
             if col in df_temp.columns:
                 df_temp[col] = pd.to_numeric(df_temp[col], errors='coerce').fillna(0)
 
-    # --- FIX: ID TYPES FOR MERGE (Нормализация ID для слияния) ---
+    # Normalize ID columns for merge
     for df_temp in [df_trans, df_behavior]:
         if 'cst_dim_id' in df_temp.columns:
-            df_temp['cst_dim_id'] = pd.to_numeric(df_temp['cst_dim_id'], errors='coerce').fillna(0).astype(int).astype(str)
+            df_temp['cst_dim_id'] = (
+                pd.to_numeric(df_temp['cst_dim_id'], errors='coerce')
+                .fillna(0)
+                .astype(int)
+                .astype(str)
+            )
         if 'transdate' in df_temp.columns:
-            df_temp['transdate'] = pd.to_datetime(df_temp['transdate'].astype(str).str.strip("'"), errors='coerce')
+            df_temp['transdate'] = pd.to_datetime(
+                df_temp['transdate'].astype(str).str.strip("'"), errors='coerce'
+            )
 
-    # --- MERGE (Слияние) ---
-    print("🔗 Объединение датасетов...")
+    # Merge datasets
+    print("🔗 Merging datasets...")
     df = df_trans.merge(df_behavior, on=['cst_dim_id', 'transdate'], how='left')
 
-    # Заполнение NaN для Категориальных колонок
-    cat_fills = ['last_phone_model', 'last_os_ver', 'direction']
-    for c in cat_fills:
+    # Fill categorical NaNs
+    for c in ['last_phone_model', 'last_os_ver', 'direction']:
         if c in df.columns:
             df[c] = df[c].fillna('Unknown')
 
-    # --- FINAL RIGOROUS NUMERIC ENSURING (Проверка числовых типов) ---
-    print("🛠️ Промежуточная проверка: обеспечение чистоты основных числовых колонок...")
+    # Final numeric cleaning
     for col in NUMERIC_COLS:
         if col in df.columns:
-            df[col] = pd.to_numeric(df[col].astype(str).str.replace(',', '.', regex=False), errors='coerce').fillna(0).astype(float)
-            
-    # Заполнение оставшихся NaN 
+            df[col] = (
+                pd.to_numeric(df[col].astype(str).str.replace(',', '.', regex=False), errors='coerce')
+                .fillna(0)
+                .astype(float)
+            )
     df.fillna(0, inplace=True)
-
-    print(f"✅ Датасет готов: {df.shape}, Уровень мошенничества: {df['target'].mean()*100:.2f}%")
+    print(f"✅ Dataset ready: {df.shape}, Fraud rate: {df['target'].mean()*100:.2f}%")
     return df
 
-# --- Feature Engineering (Создание признаков) ---
+# ---------------------------------------------------------------------------
+# Feature engineering (enhanced)
+# ---------------------------------------------------------------------------
 def engineer_features(df):
-    print("\n⚙️ Создание признаков...")
-    
-    # Признаки времени
+    print("\n⚙️ Engineering features...")
+    # Temporal features
     if 'transdatetime' in df.columns:
         df['transdatetime'] = pd.to_datetime(df['transdatetime'].astype(str).str.strip("'"), errors='coerce')
         df['hour'] = df['transdatetime'].dt.hour.fillna(0).astype(int)
         df['day_of_week'] = df['transdatetime'].dt.dayofweek.fillna(0).astype(int)
-        df['is_night'] = df['hour'].apply(lambda x: 1 if (0 <= x <= 6) else 0)
+        df['is_night'] = df['hour'].apply(lambda x: 1 if 0 <= x <= 6 else 0)
     else:
         df['hour'] = 0
         df['day_of_week'] = 0
         df['is_night'] = 0
 
-    # Признаки суммы
+    # Amount features
     if 'amount' in df.columns:
         df['amount_log'] = np.log1p(df['amount'])
-        
-    # --- НОВЫЙ КОМПОЗИТНЫЙ ПРИЗНАК: БОЛЬШАЯ СУММА + НЕСТАБИЛЬНЫЙ ИНТЕРВАЛ ---
-    if 'amount' in df.columns and 'std_login_interval' in df.columns:
-        # Мошеннические транзакции часто имеют: 1) большую сумму и 2) необычное (нестабильное) время логина
-        df['is_high_risk_combo'] = ((df['amount'] > 10000.0) & (df['std_login_interval'] > 100000.0)).astype(int) 
 
-    # Поведенческие флаги
+    # Composite high‑risk flag
+    if 'amount' in df.columns and 'std_login_interval' in df.columns:
+        df['is_high_risk_combo'] = ((df['amount'] > 10000.0) & (df['std_login_interval'] > 100000.0)).astype(int)
+
+    # Behavioral flags
     if 'device_count_30d' in df.columns:
         df['is_device_hopper'] = (df['device_count_30d'] > 1).astype(int)
-    
     if 'avg_login_interval' in df.columns:
         df['is_fast_bot'] = (df['avg_login_interval'] < 10).astype(int)
 
-    # Агрегаты по клиенту
+    # NEW composite features
+    if 'logins_last_7_days' in df.columns and 'logins_last_30_days' in df.columns:
+        df['login_velocity'] = df['logins_last_7_days'] / (df['logins_last_30_days'] + 1e-6)
+    if 'device_count_30d' in df.columns and 'logins_last_30_days' in df.columns:
+        df['device_change_rate'] = df['device_count_30d'] / (df['logins_last_30_days'] + 1)
+    if 'hour' in df.columns:
+        df['time_since_last_login'] = (24 - df['hour']).clip(lower=0)
+
+    # User‑level aggregates
     if 'cst_dim_id' in df.columns and 'amount' in df.columns:
-        # Агрегация должна быть выполнена на полном датасете для избежания утечки,
-        # так как это признаки, основанные на ИСТОРИИ клиента до текущей транзакции.
-        # Однако, поскольку у нас нет точных данных о времени, мы делаем агрегацию по всему датасету
-        # и полагаемся на разделение train/test, чтобы избежать прямой утечки.
         user_agg = df.groupby('cst_dim_id').agg({
             'amount': ['mean', 'std', 'count'],
-            'target': 'sum'
+            'target': 'sum',
         }).reset_index()
         user_agg.columns = ['cst_dim_id', 'user_avg_amt', 'user_std_amt', 'user_tx_count', 'user_hist_fraud']
         df = df.merge(user_agg, on='cst_dim_id', how='left')
         df.fillna(0, inplace=True)
-        
-        # --- НОВОЕ: ОТНОШЕНИЕ ТЕКУЩЕЙ СУММЫ К СРЕДНЕЙ ПОЛЬЗОВАТЕЛЯ ---
-        df['amount_to_avg_ratio'] = df['amount'] / df['user_avg_amt'].replace(0, 1e-6) # Защита от деления на ноль
+        df['amount_to_avg_ratio'] = df['amount'] / df['user_avg_amt'].replace(0, 1e-6)
         df['amount_to_avg_ratio'].replace([np.inf, -np.inf], 99999.0, inplace=True)
-            
+
+    # Apply any extra helper‑based features
+    df = add_composite_features(df)
     return df
 
-# --- Prepare & Train (Подготовка и Обучение) ---
+# ---------------------------------------------------------------------------
+# Training routine with optional grid search
+# ---------------------------------------------------------------------------
 def train_model(df):
-    print("\n🚀 Подготовка к обучению...")
-    
+    print("\n🚀 Preparing training...")
     ignore_cols = ['cst_dim_id', 'transdate', 'transdatetime', 'docno', 'target']
-    
-    # 1. Разделение данных
     features = [c for c in df.columns if c not in ignore_cols]
     X = df[features]
     y = df['target']
-    
-    # Сначала делим, чтобы избежать утечки
+
     X_train, X_test, y_train, y_test = train_test_split(
         X, y, test_size=0.2, random_state=42, stratify=y
     )
-    
-    print("❌ Удаление ручного Target Encoding. CatBoost будет использовать нативные категории.")
-    
-    # Исходные категориальные признаки для CatBoost
+
+    print("❌ Removing manual Target Encoding. CatBoost will handle native categories.")
     cat_features = ['direction', 'last_phone_model', 'last_os_ver']
     cat_features = [c for c in cat_features if c in X_train.columns]
-    
     all_features = X_train.columns.tolist()
-    
-    # Финальная проверка числовых признаков
     num_features = [f for f in all_features if f not in cat_features]
-    print(f"🛠️ Финальная очистка {len(num_features)} числовых признаков перед CatBoost...")
-
+    print(f"🛠️ Final numeric cleanup of {len(num_features)} features before CatBoost...")
     for col in num_features:
         X_train[col] = pd.to_numeric(X_train[col], errors='coerce').fillna(0).astype(float)
         X_test[col] = pd.to_numeric(X_test[col], errors='coerce').fillna(0).astype(float)
-    
-    # Убеждаемся, что категориальные признаки имеют строковый тип
     for c in cat_features:
         X_train[c] = X_train[c].astype(str)
         X_test[c] = X_test[c].astype(str)
-        
-    # Удаляем лишние колонки
     X_train = X_train.drop(columns=[c for c in X_train.columns if c not in all_features], errors='ignore')
     X_test = X_test.drop(columns=[c for c in X_test.columns if c not in all_features], errors='ignore')
-        
-    print(f"Признаки ({len(all_features)}): {all_features}")
+    print(f"Features ({len(all_features)}): {all_features}")
     print(f"Train: {X_train.shape}, Test: {X_test.shape}")
-    
-    # Расчет scale_pos_weight
-    scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
-    print(f"⚖️ Установлен scale_pos_weight: {scale_pos_weight:.2f}")
 
-    # Обучение модели
-    model = CatBoostClassifier(
-        iterations=2000, 
-        learning_rate=0.05, # Увеличиваем скорость обучения
-        depth=8, 
-        eval_metric='PRAUC',
-        scale_pos_weight=scale_pos_weight,
-        l2_leaf_reg=5, # Увеличиваем L2 регуляризацию для лучшей обобщающей способности
-        task_type='CPU',
-        random_seed=42,
-        verbose=200,
-        early_stopping_rounds=150
-    )
+    scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
+    print(f"⚖️ scale_pos_weight set to: {scale_pos_weight:.2f}")
+
+    # Hyperparameter tuning with optional Ray Tune integration
+    if config.USE_RAY:
+        try:
+            from ray import tune
+            from ray.tune.search.optuna import OptunaSearch
+            import ray
+            
+            print("🚀 Using Ray Tune for distributed hyperparameter search on GPU")
+            
+            # Инициализация Ray по образцу Innovatex
+            if not ray.is_initialized():
+                os.environ.setdefault("RAY_USAGE_STATS_ENABLED", "0")
+                os.environ.setdefault("RAY_ACCEL_ENV_VAR_OVERRIDE_ON_ZERO", "0")
+                
+                # Если GPU доступен, используем меньше воркеров (GPU можно шарить)
+                num_cpus = 2 if TASK_TYPE == 'GPU' else config.RAY_NUM_WORKERS
+                
+                ray.init(
+                    num_cpus=num_cpus if num_cpus > 0 else None,
+                    num_gpus=1 if TASK_TYPE == 'GPU' else 0,  # Указываем что есть 1 GPU
+                    ignore_reinit_error=True,
+                    logging_level='ERROR',
+                    _system_config={
+                        "metrics_report_interval_ms": 0,
+                        "enable_metrics_collection": False
+                    },
+                    include_dashboard=False
+                )
+                print(f"✅ Ray initialized: {num_cpus} CPUs, {'1 GPU' if TASK_TYPE == 'GPU' else '0 GPUs'}")
+            
+            # Trainable функция которая запускается на Ray workers
+            def train_catboost(config_params):
+                """Обучение CatBoost на Ray worker с GPU"""
+                from catboost import CatBoostClassifier
+                from sklearn.metrics import f1_score
+                
+                # Каждый worker использует GPU (Ray управляет доступом)
+                model_trial = CatBoostClassifier(
+                    iterations=int(config_params['iterations']),
+                    learning_rate=config_params['learning_rate'],
+                    depth=int(config_params['depth']),
+                    l2_leaf_reg=config_params['l2_leaf_reg'],
+                    eval_metric='AUC',
+                    scale_pos_weight=scale_pos_weight,
+                    task_type=TASK_TYPE,  # GPU на каждом worker
+                    devices=f'{config.GPU_DEVICE_ID}' if TASK_TYPE == 'GPU' else None,
+                    random_seed=42,
+                    verbose=False
+                )
+                
+                # Обучаем на GPU
+                model_trial.fit(X_train, y_train, cat_features=cat_features, verbose=False)
+                
+                # Предсказания
+                y_prob = model_trial.predict_proba(X_test)[:, 1]
+                y_pred = (y_prob > 0.5).astype(int)
+                f1 = f1_score(y_test, y_pred)
+                
+                # Отчет в Ray Tune
+                tune.report(f1_score=f1)
+            
+            search_space = {
+                'iterations': tune.choice(config.HYPERPARAM_GRID['iterations']),
+                'learning_rate': tune.choice(config.HYPERPARAM_GRID['learning_rate']),
+                'depth': tune.choice(config.HYPERPARAM_GRID['depth']),
+                'l2_leaf_reg': tune.choice(config.HYPERPARAM_GRID['l2_leaf_reg'])
+            }
+            
+            # Ray Tune с GPU resource
+            from ray import tune as ray_tune
+            analysis = ray_tune.run(
+                train_catboost,
+                config=search_space,
+                num_samples=10,
+                search_alg=OptunaSearch(metric='f1_score', mode='max'),
+                verbose=1,
+                resources_per_trial={
+                    'cpu': 1,
+                    'gpu': 0.5 if TASK_TYPE == 'GPU' else 0  # Каждый trial использует 50% GPU (2 параллельно)
+                }
+            )
+            
+            best_params = analysis.get_best_config(metric='f1_score', mode='max')
+            ray.shutdown()
+            print(f"🔎 Ray Tune best params: {best_params}")
+            
+        except ImportError as e:
+            print(f"⚠️ Ray not installed ({e}), falling back to grid search")
+            config.USE_RAY = False
+        except Exception as e:
+            print(f"⚠️ Ray Tune failed ({e}), falling back to grid search")
+            if ray.is_initialized():
+                ray.shutdown()
+            config.USE_RAY = False
     
+    if config.USE_GRID_SEARCH and not config.USE_RAY:
+        print(f"🔍 Running grid search on {TASK_TYPE}...")
+        best_score = -1
+        best_params = None
+        param_grid = config.HYPERPARAM_GRID
+        keys = list(param_grid.keys())
+        total_combinations = len(list(itertools.product(*[param_grid[k] for k in keys])))
+        print(f"Testing {total_combinations} parameter combinations...")
+        
+        for idx, values in enumerate(itertools.product(*[param_grid[k] for k in keys]), 1):
+            params = dict(zip(keys, values))
+            cv_scores = []
+            skf = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+            for train_idx, val_idx in skf.split(X_train, y_train):
+                X_tr, X_val = X_train.iloc[train_idx], X_train.iloc[val_idx]
+                y_tr, y_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+                model_cv = CatBoostClassifier(
+                    iterations=params.get('iterations', 2000),
+                    learning_rate=params.get('learning_rate', 0.05),
+                    depth=params.get('depth', 8),
+                    eval_metric='AUC',  # AUC поддерживается на GPU (вместо PRAUC)
+                    scale_pos_weight=scale_pos_weight,
+                    l2_leaf_reg=params.get('l2_leaf_reg', 5),
+                    task_type=TASK_TYPE,
+                    random_seed=42,
+                    verbose=False,
+                    **GPU_PARAMS
+                )
+                model_cv.fit(X_tr, y_tr, cat_features=cat_features, eval_set=(X_val, y_val), verbose=False)
+                prob = model_cv.predict_proba(X_val)[:, 1]
+                pred = (prob > 0.5).astype(int)
+                cv_scores.append(f1_score(y_val, pred))
+            mean_score = np.mean(cv_scores)
+            print(f"  [{idx}/{total_combinations}] Params: {params} → F1: {mean_score:.4f}")
+            if mean_score > best_score:
+                best_score = mean_score
+                best_params = params
+        print(f"🔎 Grid search best F1: {best_score:.4f} with params {best_params}")
+        model = CatBoostClassifier(
+            iterations=best_params.get('iterations', 2000),
+            learning_rate=best_params.get('learning_rate', 0.05),
+            depth=best_params.get('depth', 8),
+            eval_metric='AUC',  # AUC поддерживается на GPU
+            scale_pos_weight=scale_pos_weight,
+            l2_leaf_reg=best_params.get('l2_leaf_reg', 5),
+            task_type=TASK_TYPE,
+            random_seed=42,
+            verbose=200,
+            early_stopping_rounds=150,
+            **GPU_PARAMS
+        )
+    else:
+        print(f"🎯 Training final model on {TASK_TYPE} without grid search...")
+        model = CatBoostClassifier(
+            iterations=2000,
+            learning_rate=0.05,
+            depth=8,
+            eval_metric='AUC',  # AUC поддерживается на GPU (вместо PRAUC)
+            scale_pos_weight=scale_pos_weight,
+            l2_leaf_reg=5,
+            task_type=TASK_TYPE,
+            random_seed=42,
+            verbose=200,
+            early_stopping_rounds=150,
+            **GPU_PARAMS
+        )
+
     train_pool = Pool(X_train, y_train, cat_features=cat_features)
     test_pool = Pool(X_test, y_test, cat_features=cat_features)
-    
     model.fit(train_pool, eval_set=test_pool, use_best_model=True)
 
-    # --- АНАЛИЗ ВАЖНОСТИ ПРИЗНАКОВ ---
+    # Feature importance
     feature_importances = model.get_feature_importance(train_pool)
     feature_names = X_train.columns
-    
     importance_df = pd.DataFrame({'Feature': feature_names, 'Importance': feature_importances})
     importance_df = importance_df.sort_values(by='Importance', ascending=False)
-
-    print("\n" + "="*60)
-    print("ТОП-10 ВАЖНОСТЬ ПРИЗНАКОВ (Feature Importance)")
-    print("="*60)
+    print("\n" + "=" * 60)
+    print("TOP-10 FEATURE IMPORTANCE")
+    print("=" * 60)
     print(importance_df.head(10).to_string(index=False))
-    print("="*60)
-    # --- КОНЕЦ АНАЛИЗА ---
-    
-    print("\n⚖️ Настройка порога для максимального F1 Score...")
+    print("=" * 60)
+
+    # Threshold optimisation
+    print("\n⚖️ Optimising threshold for max F1...")
     y_prob = model.predict_proba(X_test)[:, 1]
-    
     precisions, recalls, thresholds = precision_recall_curve(y_test, y_prob)
     f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
-    f1_scores = np.nan_to_num(f1_scores) 
-    best_idx = np.argmax(f1_scores)
-    
-    # ✅ Явное сохранение лучшего F1 для вывода
-    best_f1 = f1_scores[best_idx]
-    
-    best_thresh = thresholds[best_idx] if len(thresholds) > best_idx else 0.5
-
-    print(f"✅ Лучший порог (Threshold): {best_thresh:.4f} (Максимальный F1: {best_f1:.4f})")
-    
+    f1_scores = np.nan_to_num(f1_scores)
+    best_idx = np.argmax(f1_scores[:-1])
+    best_thresh = thresholds[best_idx]
     y_pred = (y_prob >= best_thresh).astype(int)
-    
-    print("\n" + "="*60)
-    print("ФИНАЛЬНЫЙ ОТЧЕТ")
-    print("="*60)
+    best_precision = precision_score(y_test, y_pred)
+    best_recall = recall_score(y_test, y_pred)
+    best_f1 = f1_score(y_test, y_pred)
+    print(f"✅ New threshold: {best_thresh:.4f} (Precision: {best_precision:.4f}, Recall: {best_recall:.4f}, F1: {best_f1:.4f})")
+
+    # Final report
+    print("\n" + "=" * 60)
+    print("FINAL REPORT (F1‑OPTIMISED)")
+    print("=" * 60)
     print(classification_report(y_test, y_pred))
     print(f"ROC AUC: {roc_auc_score(y_test, y_prob):.4f}")
-    
     cm = confusion_matrix(y_test, y_pred)
-    print("Матрица ошибок (Confusion Matrix):")
-    print(f"TN: {cm[0,0]} | FP: {cm[0,1]}")
-    print(f"FN: {cm[1,0]} | TP: {cm[1,1]}")
+    print("Confusion Matrix:")
+    print(f"TN: {cm[0,0]} | FP: {cm[0,1]} (False alarms)")
+    print(f"FN: {cm[1,0]} | TP: {cm[1,1]} (Detected fraud)")
+
+    # Ensure models directory exists and save artifacts compatible with predict.py
+    os.makedirs('models', exist_ok=True)
+    model.save_model('models/catboost_fraud_model.cbm')
+    with open('models/feature_names.pkl', 'wb') as f:
+        pickle.dump(feature_names.tolist(), f)
+    print("\n💾 Model saved to 'models/catboost_fraud_model.cbm'")
+    print("💾 Feature names saved to 'models/feature_names.pkl'")
     
-    model.save_model('catboost_fraud_final.cbm')
-    print("\n💾 Модель сохранена в 'catboost_fraud_final.cbm'")
+    # Save detailed metrics report
+    metrics_report = f"""Model Training Report
+{'='*60}
+Training Date: {pd.Timestamp.now()}
+Dataset Shape: {df.shape}
+Features Used: {len(feature_names)}
+Class Distribution: {dict(y.value_counts())}
+
+Best Threshold: {best_thresh:.4f}
+
+Performance Metrics:
+  ROC AUC:    {roc_auc_score(y_test, y_prob):.4f}
+  Precision:  {best_precision:.4f}
+  Recall:     {best_recall:.4f}
+  F1-Score:   {best_f1:.4f}
+
+Confusion Matrix:
+  TN: {cm[0,0]:5d}  |  FP: {cm[0,1]:5d}
+  FN: {cm[1,0]:5d}  |  TP: {cm[1,1]:5d}
+
+Top-10 Most Important Features:
+{importance_df.head(10).to_string(index=False)}
+{'='*60}
+"""
+    with open('models/model_metrics.txt', 'w', encoding='utf-8') as f:
+        f.write(metrics_report)
+    print("💾 Metrics saved to 'models/model_metrics.txt'")
     
-    # 🚀 Возвращаем модель и лучший F1 score
-    return model, best_f1
+    return model, best_f1, best_precision, best_recall
 
 if __name__ == "__main__":
     df = load_and_clean_data()
     df = engineer_features(df)
-    # 🚀 Получаем оба значения
-    model, best_f1_score = train_model(df)
-    
-    # --- INTERPRETATION (Интерпретация модели) ---
-    print("\n" + "="*60)
-    print("ИНТЕРПРЕТАЦИЯ КЛЮЧЕВЫХ ФАКТОРОВ МОДЕЛИ")
-    print("="*60)
-    # ✅ Используем явно переданный F1 score
-    print(f"F1 Score (Threshold-Optimized): {best_f1_score:.4f}")
-    print(f"PRAUC (Metric for training): {model.get_best_score()['validation']['PRAUC']:.4f}")
-    print("\nМОДЕЛЬ УДАРЯЕТ ПО ТРЕМ ГЛАВНЫМ ФАКТОРАМ:")
-    print("1. КУДА ИДЕТ ПЕРЕВОД (Recipient/Direction): Самый сильный сигнал - это ID получателя.")
-    print("2. АНОМАЛИИ СУММЫ (Amount vs Average): Текущая сумма *сильно* отличается от исторической средней суммы клиента.")
-    print("3. ИСТОРИЯ КЛИЕНТА (User History): Повторное мошенничество - мощный предиктор.")
-    print("\nДОПОЛНИТЕЛЬНЫЙ ФАКТОР: Поведенческая нестабильность (смена устройств, ОС, высокая волатильность логинов).")
-    print("Эти факторы помогают отличить реальный платеж от атаки на аккаунт.")
-    print("="*60)
+    model, best_f1_score, best_precision_score, best_recall_score = train_model(df)
+    print("\n" + "=" * 60)
+    print("MODEL INTERPRETATION")
+    print("=" * 60)
+    print(f"Precision (balanced): {best_precision_score:.4f}")
+    print(f"Recall: {best_recall_score:.4f}")
+    print(f"F1 (max): {best_f1_score:.4f}")
+    print(f"AUC: {model.get_best_score()['validation']['AUC']:.4f}")
+    print("\nKey factors: Direction, Amount vs Avg, User History, Device stability, Login volatility")
+    print("=" * 60)

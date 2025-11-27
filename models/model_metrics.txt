@@ -1,2 +1,32 @@
-Model trained: 2025-11-23 23:43:40.556161
-Features: 28
+Model Training Report
+============================================================
+Training Date: 2025-11-27 13:08:51.801269
+Dataset Shape: (13140, 41)
+Features Used: 36
+Class Distribution: {0: np.int64(12975), 1: np.int64(165)}
+
+Best Threshold: 0.7001
+
+Performance Metrics:
+  ROC AUC:    0.9911
+  Precision:  0.5581
+  Recall:     0.7273
+  F1-Score:   0.6316
+
+Confusion Matrix:
+  TN:  2576  |  FP:    19
+  FN:     9  |  TP:    24
+
+Top-10 Most Important Features:
+                                                             Feature  Importance
+                                                           direction   23.694601
+                                                     user_hist_fraud   21.441213
+                                                 amount_to_avg_ratio    7.590878
+                                                       user_tx_count    6.095532
+                                                              amount    5.376858
+                                                          amount_log    3.132383
+                                                    last_phone_model    2.649626
+                                            weighted_avg_interval_7d    2.460976
+                                               time_since_last_login    2.292290
+Количество уникальных логин-сессий за последние 30 дней до transdate    2.133795
+============================================================
