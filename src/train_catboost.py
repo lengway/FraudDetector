@@ -144,7 +144,7 @@ def load_and_clean_data():
         'Модель телефона из самой последней сессии (по времени) перед transdate': 'last_phone_model',
         'Версия ОС из самой последней сессии перед transdate': 'last_os_ver',
         'Количество уникальных логин-сессий (минутных тайм-слотов) за последние 7 дней до transdate': 'logins_7d',
-        'Количество уникальных логин-сессий за последние 30 дней до транзакции': 'logins_30d',
+        'Количество уникальных логин-сессий за последние 30 дней до transdate': 'logins_30d',
         'Среднее число логинов в день за последние 7 дней: logins_last_7_days / 7': 'avg_logins_7d',
         'Среднее число логинов в день за последние 30 дней: logins_last_30_days / 30': 'avg_logins_30d',
         'Относительное изменение частоты логинов за 7 дней к средней частоте за 30 дней:\n(freq7d?freq30d)/freq30d(freq_{7d} - freq_{30d}) / freq_{30d}(freq7d?freq30d)/freq30d — показывает, стал клиент заходить чаще или реже недавно': 'rel_freq_change_7_30d',
@@ -231,24 +231,36 @@ def engineer_features(df):
         df['is_fast_bot'] = (df['avg_login_interval'] < 10).astype(int)
 
     # NEW composite features
-    if 'logins_last_7_days' in df.columns and 'logins_last_30_days' in df.columns:
-        df['login_velocity'] = df['logins_last_7_days'] / (df['logins_last_30_days'] + 1e-6)
-    if 'device_count_30d' in df.columns and 'logins_last_30_days' in df.columns:
-        df['device_change_rate'] = df['device_count_30d'] / (df['logins_last_30_days'] + 1)
+    if 'logins_7d' in df.columns and 'logins_30d' in df.columns:
+        logins_7d = pd.to_numeric(df['logins_7d'], errors='coerce').fillna(0)
+        logins_30d = pd.to_numeric(df['logins_30d'], errors='coerce').fillna(0)
+        df['login_velocity'] = logins_7d / (logins_30d + 1e-6)
+    if 'device_count_30d' in df.columns and 'logins_30d' in df.columns:
+        device_count = pd.to_numeric(df['device_count_30d'], errors='coerce').fillna(0)
+        logins_30d = pd.to_numeric(df['logins_30d'], errors='coerce').fillna(0)
+        df['device_change_rate'] = device_count / (logins_30d + 1)
     if 'hour' in df.columns:
         df['time_since_last_login'] = (24 - df['hour']).clip(lower=0)
 
     # User‑level aggregates
     if 'cst_dim_id' in df.columns and 'amount' in df.columns:
-        user_agg = df.groupby('cst_dim_id').agg({
+        # Amount aggregates per user (no leakage - these are static stats)
+        user_amt_agg = df.groupby('cst_dim_id').agg({
             'amount': ['mean', 'std', 'count'],
-            'target': 'sum',
         }).reset_index()
-        user_agg.columns = ['cst_dim_id', 'user_avg_amt', 'user_std_amt', 'user_tx_count', 'user_hist_fraud']
-        df = df.merge(user_agg, on='cst_dim_id', how='left')
+        user_amt_agg.columns = ['cst_dim_id', 'user_avg_amt', 'user_std_amt', 'user_tx_count']
+        df = df.merge(user_amt_agg, on='cst_dim_id', how='left')
         df.fillna(0, inplace=True)
         df['amount_to_avg_ratio'] = df['amount'] / df['user_avg_amt'].replace(0, 1e-6)
         df['amount_to_avg_ratio'].replace([np.inf, -np.inf], 99999.0, inplace=True)
+        
+        # user_hist_fraud: CUMULATIVE fraud count UP TO current transaction (no leakage!)
+        # Sort by user and time, then cumsum().shift(1) to exclude current tx
+        if 'transdate' in df.columns:
+            df = df.sort_values(['cst_dim_id', 'transdate'])
+            df['user_hist_fraud'] = df.groupby('cst_dim_id')['target'].cumsum().shift(1).fillna(0).astype(int)
+        else:
+            df['user_hist_fraud'] = 0
 
     # Apply any extra helper‑based features
     df = add_composite_features(df)

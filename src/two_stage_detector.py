@@ -290,8 +290,9 @@ class MLModelDetector:
         X = df[self.feature_names]
         df['fraud_probability'] = self.model.predict_proba(X)[:, 1]
         
-        # Используем пороги из config
-        df['fraud_prediction'] = (df['fraud_probability'] > 0.5).astype(int)
+        # Используем порог из config (0.80 = optimal precision/recall balance)
+        threshold = getattr(config, 'ML_PREDICTION_THRESHOLD', 0.80)
+        df['fraud_prediction'] = (df['fraud_probability'] >= threshold).astype(int)
         
         # Risk levels
         df['risk_level'] = pd.cut(

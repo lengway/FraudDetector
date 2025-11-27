@@ -21,6 +21,9 @@ THRESHOLDS = {
     'high': 0.80      # 0.60-0.80 = HIGH risk, >= 0.80 = CRITICAL
 }
 
+# ML model prediction threshold (higher = fewer FP, lower recall)
+ML_PREDICTION_THRESHOLD = 0.80  # Optimal balance: 91% precision, 92% recall
+
 # Metrics targets
 METRIC_TARGETS = {
     'auc_roc': 0.90,
