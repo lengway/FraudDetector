@@ -22,7 +22,13 @@ THRESHOLDS = {
 }
 
 # ML model prediction threshold (higher = fewer FP, lower recall)
-ML_PREDICTION_THRESHOLD = 0.80  # Optimal balance: 91% precision, 92% recall
+ML_PREDICTION_THRESHOLD = 0.80  # TP:155, FP:16, FN:10
+
+# Scorecard threshold: score <= this value = AUTO APPROVE
+# Set to -1 to send ALL transactions to ML (maximum recall)
+# Set to 0 to approve only score=0 (high recall)
+# Set to 1 to approve score 0-1 (balanced)
+SCORECARD_THRESHOLD = -1  # Send EVERYTHING to ML for max recall
 
 # Metrics targets
 METRIC_TARGETS = {

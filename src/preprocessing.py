@@ -78,7 +78,7 @@ def load_data(base_path='docs'):
                     path,
                     sep=';',
                     encoding='cp1251',
-                    header=0,
+                    header=1,  # header=1 gives English column names directly
                     engine='python',
                     on_bad_lines='skip',
                 )
@@ -108,44 +108,22 @@ def clean_and_merge(df_trans, df_behavior):
     """
     print("🔧 Cleaning and merging data...")
     
-    # Rename behavioral columns for consistency
-    behav_map = {
-        'Уникальный идентификатор клиента': 'cst_dim_id',
-        'Дата совершенной транзакции': 'transdate',
-        'Количество разных версий ОС (os_ver) за последние 30 дней до transdate — сколько разных ОС/версий использовал клиент': 'os_count_30d',
-        'Количество разных моделей телефона (phone_model) за последние 30 дней — насколько часто клиент "менял устройство" по логам': 'device_count_30d',
-        'Модель телефона из самой последней сессии (по времени) перед transdate': 'last_phone_model',
-        'Версия ОС из самой последней сессии перед transdate': 'last_os_ver',
-        'Количество уникальных логин-сессий (минутных тайм-слотов) за последние 7 дней до transdate': 'logins_7d',
-        'Количество уникальных логин-сессий за последние 30 дней до transdate': 'logins_30d',
-        'Среднее число логинов в день за последние 7 дней: logins_last_7_days / 7': 'avg_logins_7d',
-        'Среднее число логинов в день за последние 30 дней: logins_last_30_days / 30': 'avg_logins_30d',
-        'Относительное изменение частоты логинов за 7 дней к средней частоте за 30 дней:\n(freq7d?freq30d)/freq30d(freq_{7d} - freq_{30d}) / freq_{30d}(freq7d?freq30d)/freq30d — показывает, стал клиент заходить чаще или реже недавно': 'rel_freq_change_7_30d',
-        'Доля логинов за 7 дней от логинов за 30 дней': 'login_share_7_30d',
-        'Средний интервал (в секундах) между соседними сессиями за последние 30 дней': 'avg_login_interval',
-        'Стандартное отклонение интервалов между логинами за 30 дней (в секундах), измеряет разброс интервалов': 'std_login_interval',
-        'Показатель "взрывности" логинов: (std?mean)/(std+mean)(std - mean)/(std + mean)(std?mean)/(std+mean) для интервалов': 'login_volatility_factor',
-        'Fano-factor интервалов: variance / mean': 'fano_factor_interval',
-        'Z-скор среднего интервала за последние 7 дней относительно среднего за 30 дней: насколько сильно недавние интервалы отличаются от типичных, в единицах стандартного отклонения': 'z_score_avg_interval_7d_vs_30d',
-        'Экспоненциально взвешенное среднее интервалов между логинами за 7 дней, где более свежие сессии имеют больший вес (коэффициент затухания 0.3)': 'weighted_avg_interval_7d',
-        'Дисперсия интервалов между логинами за 30 дней (в секундах?), ещё одна мера разброса': 'interval_variance_30d',
-    }
-    df_behavior.rename(columns=behav_map, inplace=True)
+    # header=1 gives English column names directly - no rename needed!
     
-    # Define expected numeric columns
+    # Define expected numeric columns (using header=1 English names)
     numeric_cols = [
         'amount',
-        'os_count_30d', 'device_count_30d',
-        'logins_7d', 'logins_30d',
-        'avg_logins_7d', 'avg_logins_30d',
-        'avg_login_interval', 'std_login_interval',
-        'rel_freq_change_7_30d',
-        'login_share_7_30d',
-        'weighted_avg_interval_7d',
-        'login_volatility_factor',
-        'fano_factor_interval',
-        'z_score_avg_interval_7d_vs_30d',
-        'interval_variance_30d',
+        'monthly_os_changes', 'monthly_phone_model_changes',
+        'logins_last_7_days', 'logins_last_30_days',
+        'login_frequency_7d', 'login_frequency_30d',
+        'avg_login_interval_30d', 'std_login_interval_30d',
+        'freq_change_7d_vs_mean',
+        'logins_7d_over_30d_ratio',
+        'ewm_login_interval_7d',
+        'burstiness_login_interval',
+        'fano_factor_login_interval',
+        'zscore_avg_login_interval_7d',
+        'var_login_interval_30d',
     ]
     
     # Force numeric types on known columns
@@ -172,8 +150,8 @@ def clean_and_merge(df_trans, df_behavior):
     print("🔗 Merging datasets...")
     df = df_trans.merge(df_behavior, on=['cst_dim_id', 'transdate'], how='left')
     
-    # Fill categorical NaNs
-    for c in ['last_phone_model', 'last_os_ver', 'direction']:
+    # Fill categorical NaNs (using header=1 column names)
+    for c in ['last_phone_model_categorical', 'last_os_categorical', 'direction']:
         if c in df.columns:
             df[c] = df[c].fillna('Unknown')
     
@@ -207,59 +185,59 @@ def add_derived_features(df):
     df = df.copy()
     
     # =========================================================================
-    # 1. device_count_30d - уже должно быть из behavioral, но проверяем
+    # 1. monthly_phone_model_changes - already from behavioral, just verify
     # =========================================================================
-    if 'device_count_30d' not in df.columns:
-        # Если нет - считаем как количество уникальных устройств за 30 дней
-        if 'last_phone_model' in df.columns and 'cst_dim_id' in df.columns:
-            device_counts = df.groupby('cst_dim_id')['last_phone_model'].transform('nunique')
-            df['device_count_30d'] = device_counts
+    if 'monthly_phone_model_changes' not in df.columns:
+        # If missing - compute as count of unique devices
+        if 'last_phone_model_categorical' in df.columns and 'cst_dim_id' in df.columns:
+            device_counts = df.groupby('cst_dim_id')['last_phone_model_categorical'].transform('nunique')
+            df['monthly_phone_model_changes'] = device_counts
         else:
-            df['device_count_30d'] = 1
-        print("   ✓ Added device_count_30d")
+            df['monthly_phone_model_changes'] = 1
+        print("   ✓ Added monthly_phone_model_changes")
     
     # =========================================================================
-    # 2. login_volatility_factor - (std - mean) / (std + mean) для интервалов
+    # 2. login_volatility_factor - (std - mean) / (std + mean) for intervals
     # =========================================================================
-    if 'login_volatility_factor' not in df.columns:
-        if 'std_login_interval' in df.columns and 'avg_login_interval' in df.columns:
-            std = pd.to_numeric(df['std_login_interval'], errors='coerce').fillna(0)
-            mean = pd.to_numeric(df['avg_login_interval'], errors='coerce').fillna(0)
+    if 'burstiness_login_interval' not in df.columns:
+        if 'std_login_interval_30d' in df.columns and 'avg_login_interval_30d' in df.columns:
+            std = pd.to_numeric(df['std_login_interval_30d'], errors='coerce').fillna(0)
+            mean = pd.to_numeric(df['avg_login_interval_30d'], errors='coerce').fillna(0)
             # Avoid division by zero
             denominator = std + mean
-            df['login_volatility_factor'] = np.where(
+            df['burstiness_login_interval'] = np.where(
                 denominator > 0,
                 (std - mean) / denominator,
                 0
             )
         else:
-            df['login_volatility_factor'] = 0
-        print("   ✓ Added login_volatility_factor")
+            df['burstiness_login_interval'] = 0
+        print("   ✓ Added burstiness_login_interval")
     
     # =========================================================================
-    # 3. is_device_hopper - флаг частой смены устройств (>1 за 30 дней)
+    # 3. is_device_hopper - frequent device changes (>1 in 30 days)
     # =========================================================================
     if 'is_device_hopper' not in df.columns:
-        device_count = pd.to_numeric(df.get('device_count_30d', 1), errors='coerce').fillna(1)
+        device_count = pd.to_numeric(df.get('monthly_phone_model_changes', 1), errors='coerce').fillna(1)
         df['is_device_hopper'] = (device_count > 1).astype(int)
         print("   ✓ Added is_device_hopper")
     
     # =========================================================================
-    # 4. BONUS: Дополнительные полезные фичи для улучшения recall
+    # 4. BONUS: Additional features for better recall
     # =========================================================================
     
-    # 4a. is_new_device - транзакция с нового устройства (редкая модель)
-    if 'last_phone_model' in df.columns:
-        device_freq = df['last_phone_model'].value_counts(normalize=True)
-        df['is_rare_device'] = df['last_phone_model'].map(
+    # 4a. is_new_device - transaction from rare device
+    if 'last_phone_model_categorical' in df.columns:
+        device_freq = df['last_phone_model_categorical'].value_counts(normalize=True)
+        df['is_rare_device'] = df['last_phone_model_categorical'].map(
             lambda x: 1 if device_freq.get(x, 0) < 0.01 else 0
         )
         print("   ✓ Added is_rare_device")
     
-    # 4b. login_burst - резкий всплеск активности (7d >> 30d average)
-    if 'logins_7d' in df.columns and 'logins_30d' in df.columns:
-        logins_7d = pd.to_numeric(df['logins_7d'], errors='coerce').fillna(0)
-        logins_30d = pd.to_numeric(df['logins_30d'], errors='coerce').fillna(0)
+    # 4b. login_burst - sudden activity spike (7d >> 30d average)
+    if 'logins_last_7_days' in df.columns and 'logins_last_30_days' in df.columns:
+        logins_7d = pd.to_numeric(df['logins_last_7_days'], errors='coerce').fillna(0)
+        logins_30d = pd.to_numeric(df['logins_last_30_days'], errors='coerce').fillna(0)
         avg_7d_expected = logins_30d / 4.28  # 30/7 = 4.28
         df['login_burst'] = np.where(
             avg_7d_expected > 0,

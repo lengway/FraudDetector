@@ -1,6 +1,6 @@
 Model Training Report
 ============================================================
-Training Date: 2025-11-28 01:00:32.058758
+Training Date: 2025-11-28 01:15:13.798545
 Dataset Shape: (13140, 39)
 Features Used: 34
 Class Distribution: {0: np.int64(12975), 1: np.int64(165)}
@@ -18,15 +18,15 @@ Confusion Matrix:
   FN:    15  |  TP:    18
 
 Top-10 Most Important Features:
-                 Feature  Importance
-               direction   31.393984
-                  amount    9.576636
-     amount_to_avg_ratio    5.825584
-            user_std_amt    4.308118
-              amount_log    3.921332
-             day_of_week    3.447281
-      device_change_rate    3.395482
-weighted_avg_interval_7d    3.370787
-         user_hist_fraud    3.303685
-           user_tx_count    2.864595
+              Feature  Importance
+            direction   31.393984
+               amount    9.576636
+  amount_to_avg_ratio    5.825584
+         user_std_amt    4.308118
+           amount_log    3.921332
+          day_of_week    3.447281
+   device_change_rate    3.395482
+ewm_login_interval_7d    3.370787
+      user_hist_fraud    3.303685
+        user_tx_count    2.864595
 ============================================================

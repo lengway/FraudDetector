@@ -21,13 +21,14 @@ import config
 class ScorecardFilter:
     """Stage 1: Fast rule-based filter using scorecard logic."""
     
-    def __init__(self, threshold_low: int = 3, threshold_high: int = 5):
+    def __init__(self, threshold_low: int = None, threshold_high: int = 5):
         """
         Args:
-            threshold_low: Скор <= этого значения → AUTO APPROVE
+            threshold_low: Скор <= этого значения → AUTO APPROVE (default from config)
             threshold_high: Скор >= этого значения → SEND TO ML MODEL
         """
-        self.threshold_low = threshold_low
+        # Use config value if not provided
+        self.threshold_low = threshold_low if threshold_low is not None else getattr(config, 'SCORECARD_THRESHOLD', 1)
         self.threshold_high = threshold_high
         
     def calculate_scorecard(self, df: pd.DataFrame) -> pd.DataFrame:
@@ -54,25 +55,25 @@ class ScorecardFilter:
         # =====================================================================
         
         # 1. Rare OS (< 1% транзакций)
-        if 'last_os_ver' in df.columns:
-            os_counts = df['last_os_ver'].value_counts(normalize=True)
-            df['rare_os_flag'] = df['last_os_ver'].map(
+        if 'last_os_categorical' in df.columns:
+            os_counts = df['last_os_categorical'].value_counts(normalize=True)
+            df['rare_os_flag'] = df['last_os_categorical'].map(
                 lambda x: 1 if os_counts.get(x, 0) < 0.01 else 0
             )
         else:
             df['rare_os_flag'] = 0
         
         # 2. Rare Device (< 1% транзакций)
-        if 'last_phone_model' in df.columns:
-            device_counts = df['last_phone_model'].value_counts(normalize=True)
-            df['rare_device_flag'] = df['last_phone_model'].map(
+        if 'last_phone_model_categorical' in df.columns:
+            device_counts = df['last_phone_model_categorical'].value_counts(normalize=True)
+            df['rare_device_flag'] = df['last_phone_model_categorical'].map(
                 lambda x: 1 if device_counts.get(x, 0) < 0.01 else 0
             )
         else:
             df['rare_device_flag'] = 0
         
         # 3. High Device Volatility (частая смена device/OS)
-        volatility_features = ['os_count_30d', 'device_count_30d']
+        volatility_features = ['monthly_os_changes', 'monthly_phone_model_changes']
         if all(f in df.columns for f in volatility_features):
             volatility_threshold = df[volatility_features].mean(axis=1).quantile(0.75)
             df['high_device_volatility'] = (
@@ -85,10 +86,10 @@ class ScorecardFilter:
         df['suspicious_device_combo'] = df['rare_device_flag'] * df['high_device_volatility']
         
         # 5. High Login Volatility (burstiness)
-        if 'login_volatility_factor' in df.columns:
-            login_vol_threshold = df['login_volatility_factor'].quantile(0.80)
+        if 'burstiness_login_interval' in df.columns:
+            login_vol_threshold = df['burstiness_login_interval'].quantile(0.80)
             df['high_login_volatility'] = (
-                df['login_volatility_factor'] > login_vol_threshold
+                df['burstiness_login_interval'] > login_vol_threshold
             ).astype(int)
         else:
             df['high_login_volatility'] = 0
@@ -98,34 +99,34 @@ class ScorecardFilter:
         # =====================================================================
         
         # 6. Резкий рост частоты логинов (fraud mean +98% vs non-fraud)
-        # rel_freq_change_7_30d > 1.0 ловит 23.6% fraud при 14% FP
-        if 'rel_freq_change_7_30d' in df.columns:
-            df['rel_freq_change_7_30d'] = pd.to_numeric(df['rel_freq_change_7_30d'], errors='coerce').fillna(0)
-            df['freq_change_suspicious'] = (df['rel_freq_change_7_30d'] > 1.0).astype(int)
+        # freq_change_7d_vs_mean > 1.0 ловит 23.6% fraud при 14% FP
+        if 'freq_change_7d_vs_mean' in df.columns:
+            df['freq_change_7d_vs_mean'] = pd.to_numeric(df['freq_change_7d_vs_mean'], errors='coerce').fillna(0)
+            df['freq_change_suspicious'] = (df['freq_change_7d_vs_mean'] > 1.0).astype(int)
         else:
             df['freq_change_suspicious'] = 0
         
         # 7. Большой интервал между логинами (fraud mean +57% vs non-fraud)
-        # avg_login_interval > 200000 ловит 13.9% fraud при 8.7% FP
-        if 'avg_login_interval' in df.columns:
-            df['avg_login_interval'] = pd.to_numeric(df['avg_login_interval'], errors='coerce').fillna(0)
-            df['large_login_interval'] = (df['avg_login_interval'] > 200000).astype(int)
+        # avg_login_interval_30d > 200000 ловит 13.9% fraud при 8.7% FP
+        if 'avg_login_interval_30d' in df.columns:
+            df['avg_login_interval_30d'] = pd.to_numeric(df['avg_login_interval_30d'], errors='coerce').fillna(0)
+            df['large_login_interval'] = (df['avg_login_interval_30d'] > 200000).astype(int)
         else:
             df['large_login_interval'] = 0
         
         # 8. Мало логинов за 7 дней (fraud mean -13% vs non-fraud)
-        # logins_7d < 3 ловит 20.6% fraud при 15.8% FP
-        if 'logins_7d' in df.columns:
-            df['logins_7d'] = pd.to_numeric(df['logins_7d'], errors='coerce').fillna(0)
-            df['low_login_activity'] = (df['logins_7d'] < 3).astype(int)
+        # logins_last_7_days < 3 ловит 20.6% fraud при 15.8% FP
+        if 'logins_last_7_days' in df.columns:
+            df['logins_last_7_days'] = pd.to_numeric(df['logins_last_7_days'], errors='coerce').fillna(0)
+            df['low_login_activity'] = (df['logins_last_7_days'] < 3).astype(int)
         else:
             df['low_login_activity'] = 0
         
         # 9. Высокая доля логинов 7d/30d (fraud mean +19% vs non-fraud)
-        # login_share_7_30d > 0.5 — активность сконцентрирована недавно
-        if 'login_share_7_30d' in df.columns:
-            df['login_share_7_30d'] = pd.to_numeric(df['login_share_7_30d'], errors='coerce').fillna(0)
-            df['high_login_ratio'] = (df['login_share_7_30d'] > 0.5).astype(int)
+        # logins_7d_over_30d_ratio > 0.5 — активность сконцентрирована недавно
+        if 'logins_7d_over_30d_ratio' in df.columns:
+            df['logins_7d_over_30d_ratio'] = pd.to_numeric(df['logins_7d_over_30d_ratio'], errors='coerce').fillna(0)
+            df['high_login_ratio'] = (df['logins_7d_over_30d_ratio'] > 0.5).astype(int)
         else:
             df['high_login_ratio'] = 0
         
@@ -155,8 +156,8 @@ class ScorecardFilter:
             df['unusual_amount_flag'] = 0
         
         # 13. Очень низкая активность недавно (ловит 58.7% пропущенных)
-        if 'login_share_7_30d' in df.columns:
-            df['very_low_recent_activity'] = (df['login_share_7_30d'] < 0.15).astype(int)
+        if 'logins_7d_over_30d_ratio' in df.columns:
+            df['very_low_recent_activity'] = (df['logins_7d_over_30d_ratio'] < 0.15).astype(int)
         else:
             df['very_low_recent_activity'] = 0
         
@@ -308,13 +309,16 @@ class MLModelDetector:
 class TwoStageDetector:
     """Основной класс двухэтапной системы детекции."""
     
-    def __init__(self, scorecard_threshold_low: int = 2,
+    def __init__(self, scorecard_threshold_low: int = None,
                  model_path: str = 'models/catboost_fraud_model.cbm'):
         """
         Args:
-            scorecard_threshold_low: Скор <= этого → авто-одобрение
+            scorecard_threshold_low: Скор <= этого → авто-одобрение (default from config)
             model_path: Путь к обученной ML модели
         """
+        # Use config value if not provided
+        if scorecard_threshold_low is None:
+            scorecard_threshold_low = getattr(config, 'SCORECARD_THRESHOLD', 1)
         self.scorecard = ScorecardFilter(threshold_low=scorecard_threshold_low)
         self.ml_model = MLModelDetector(model_path=model_path)
         
@@ -408,9 +412,8 @@ if __name__ == '__main__':
     print("Engineering features...")
     df = engineer_features(df)
     
-    # Двухэтапная детекция с более строгим порогом для recall
-    # Скор ≤1 = auto-approve (только самые безопасные)
-    detector = TwoStageDetector(scorecard_threshold_low=1)
+    # Двухэтапная детекция - порог из config для максимального recall
+    detector = TwoStageDetector()  # uses config.SCORECARD_THRESHOLD
     results = detector.detect_fraud(df)
     
     # Сохранение результатов

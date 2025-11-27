@@ -73,21 +73,21 @@ def clean_columns(df):
     return df
 
 # ---------------------------------------------------------------------------
-# Expected numeric columns (used for type coercion)
+# Expected numeric columns (header=1 English names from CSV)
 # ---------------------------------------------------------------------------
 NUMERIC_COLS = [
     'amount',
-    'os_count_30d', 'device_count_30d',
-    'logins_7d', 'logins_30d',
-    'avg_logins_7d', 'avg_logins_30d',
-    'avg_login_interval', 'std_login_interval',
-    'rel_freq_change_7_30d',
-    'login_share_7_30d',
-    'weighted_avg_interval_7d',
-    'login_volatility_factor',
-    'fano_factor_interval',
-    'z_score_avg_interval_7d_vs_30d',
-    'interval_variance_30d',
+    'monthly_os_changes', 'monthly_phone_model_changes',
+    'logins_last_7_days', 'logins_last_30_days',
+    'login_frequency_7d', 'login_frequency_30d',
+    'avg_login_interval_30d', 'std_login_interval_30d',
+    'freq_change_7d_vs_mean',
+    'logins_7d_over_30d_ratio',
+    'ewm_login_interval_7d',
+    'burstiness_login_interval',
+    'fano_factor_login_interval',
+    'zscore_avg_login_interval_7d',
+    'var_login_interval_30d',
 ]
 
 # ---------------------------------------------------------------------------
@@ -120,7 +120,7 @@ def load_and_clean_data():
             'поведенческие паттерны клиентов.csv',
             sep=';',
             encoding='cp1251',
-            header=0,
+            header=1,
             engine='python',
             on_bad_lines='skip',
         )
@@ -129,35 +129,13 @@ def load_and_clean_data():
             'docs/поведенческие паттерны клиентов.csv',
             sep=';',
             encoding='cp1251',
-            header=0,
+            header=1,
             engine='python',
             on_bad_lines='skip',
         )
     df_behavior = clean_columns(df_behavior)
 
-    # Rename columns for consistency
-    behav_map = {
-        'Уникальный идентификатор клиента': 'cst_dim_id',
-        'Дата совершенной транзакции': 'transdate',
-        'Количество разных версий ОС (os_ver) за последние 30 дней до transdate — сколько разных ОС/версий использовал клиент': 'os_count_30d',
-        'Количество разных моделей телефона (phone_model) за последние 30 дней — насколько часто клиент “менял устройство” по логам': 'device_count_30d',
-        'Модель телефона из самой последней сессии (по времени) перед transdate': 'last_phone_model',
-        'Версия ОС из самой последней сессии перед transdate': 'last_os_ver',
-        'Количество уникальных логин-сессий (минутных тайм-слотов) за последние 7 дней до transdate': 'logins_7d',
-        'Количество уникальных логин-сессий за последние 30 дней до transdate': 'logins_30d',
-        'Среднее число логинов в день за последние 7 дней: logins_last_7_days / 7': 'avg_logins_7d',
-        'Среднее число логинов в день за последние 30 дней: logins_last_30_days / 30': 'avg_logins_30d',
-        'Относительное изменение частоты логинов за 7 дней к средней частоте за 30 дней:\n(freq7d?freq30d)/freq30d(freq_{7d} - freq_{30d}) / freq_{30d}(freq7d?freq30d)/freq30d — показывает, стал клиент заходить чаще или реже недавно': 'rel_freq_change_7_30d',
-        'Доля логинов за 7 дней от логинов за 30 дней': 'login_share_7_30d',
-        'Средний интервал (в секундах) между соседними сессиями за последние 30 дней': 'avg_login_interval',
-        'Стандартное отклонение интервалов между логинами за 30 дней (в секундах), измеряет разброс интервалов': 'std_login_interval',
-        'Показатель “взрывности” логинов: (std?mean)/(std+mean)(std - mean)/(std + mean)(std?mean)/(std+mean) для интервалов': 'login_volatility_factor',
-        'Fano-factor интервалов: variance / mean': 'fano_factor_interval',
-        'Z-скор среднего интервала за последние 7 дней относительно среднего за 30 дней: насколько сильно недавние интервалы отличаются от типичных, в единицах стандартного отклонения': 'z_score_avg_interval_7d_vs_30d',
-        'Экспоненциально взвешенное среднее интервалов между логинами за 7 дней, где более свежие сессии имеют больший вес (коэффициент затухания 0.3)': 'weighted_avg_interval_7d',
-        'Дисперсия интервалов между логинами за 30 дней (в секундах?), ещё одна мера разброса': 'interval_variance_30d',
-    }
-    df_behavior.rename(columns=behav_map, inplace=True)
+    # header=1 provides English column names directly
 
     # Force numeric types on known columns
     for df_temp in [df_trans, df_behavior]:
@@ -183,8 +161,8 @@ def load_and_clean_data():
     print("🔗 Merging datasets...")
     df = df_trans.merge(df_behavior, on=['cst_dim_id', 'transdate'], how='left')
 
-    # Fill categorical NaNs
-    for c in ['last_phone_model', 'last_os_ver', 'direction']:
+    # Fill categorical NaNs (using header=1 column names)
+    for c in ['last_phone_model_categorical', 'last_os_categorical', 'direction']:
         if c in df.columns:
             df[c] = df[c].fillna('Unknown')
 
@@ -220,24 +198,24 @@ def engineer_features(df):
     if 'amount' in df.columns:
         df['amount_log'] = np.log1p(df['amount'])
 
-    # Composite high‑risk flag
-    if 'amount' in df.columns and 'std_login_interval' in df.columns:
-        df['is_high_risk_combo'] = ((df['amount'] > 10000.0) & (df['std_login_interval'] > 100000.0)).astype(int)
+    # Composite high‑risk flag (using header=1 column names)
+    if 'amount' in df.columns and 'std_login_interval_30d' in df.columns:
+        df['is_high_risk_combo'] = ((df['amount'] > 10000.0) & (df['std_login_interval_30d'] > 100000.0)).astype(int)
 
     # Behavioral flags
-    if 'device_count_30d' in df.columns:
-        df['is_device_hopper'] = (df['device_count_30d'] > 1).astype(int)
-    if 'avg_login_interval' in df.columns:
-        df['is_fast_bot'] = (df['avg_login_interval'] < 10).astype(int)
+    if 'monthly_phone_model_changes' in df.columns:
+        df['is_device_hopper'] = (df['monthly_phone_model_changes'] > 1).astype(int)
+    if 'avg_login_interval_30d' in df.columns:
+        df['is_fast_bot'] = (df['avg_login_interval_30d'] < 10).astype(int)
 
     # NEW composite features
-    if 'logins_7d' in df.columns and 'logins_30d' in df.columns:
-        logins_7d = pd.to_numeric(df['logins_7d'], errors='coerce').fillna(0)
-        logins_30d = pd.to_numeric(df['logins_30d'], errors='coerce').fillna(0)
+    if 'logins_last_7_days' in df.columns and 'logins_last_30_days' in df.columns:
+        logins_7d = pd.to_numeric(df['logins_last_7_days'], errors='coerce').fillna(0)
+        logins_30d = pd.to_numeric(df['logins_last_30_days'], errors='coerce').fillna(0)
         df['login_velocity'] = logins_7d / (logins_30d + 1e-6)
-    if 'device_count_30d' in df.columns and 'logins_30d' in df.columns:
-        device_count = pd.to_numeric(df['device_count_30d'], errors='coerce').fillna(0)
-        logins_30d = pd.to_numeric(df['logins_30d'], errors='coerce').fillna(0)
+    if 'monthly_phone_model_changes' in df.columns and 'logins_last_30_days' in df.columns:
+        device_count = pd.to_numeric(df['monthly_phone_model_changes'], errors='coerce').fillna(0)
+        logins_30d = pd.to_numeric(df['logins_last_30_days'], errors='coerce').fillna(0)
         df['device_change_rate'] = device_count / (logins_30d + 1)
     if 'hour' in df.columns:
         df['time_since_last_login'] = (24 - df['hour']).clip(lower=0)
@@ -281,7 +259,7 @@ def train_model(df):
     )
 
     print("❌ Removing manual Target Encoding. CatBoost will handle native categories.")
-    cat_features = ['direction', 'last_phone_model', 'last_os_ver']
+    cat_features = ['direction', 'last_phone_model_categorical', 'last_os_categorical']
     cat_features = [c for c in cat_features if c in X_train.columns]
     all_features = X_train.columns.tolist()
     num_features = [f for f in all_features if f not in cat_features]
