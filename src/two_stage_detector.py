@@ -21,7 +21,7 @@ import config
 class ScorecardFilter:
     """Stage 1: Fast rule-based filter using scorecard logic."""
     
-    def __init__(self, threshold_low: int = 2, threshold_high: int = 5):
+    def __init__(self, threshold_low: int = 3, threshold_high: int = 5):
         """
         Args:
             threshold_low: Скор <= этого значения → AUTO APPROVE
@@ -33,14 +33,25 @@ class ScorecardFilter:
     def calculate_scorecard(self, df: pd.DataFrame) -> pd.DataFrame:
         """Вычисление scorecard баллов для каждой транзакции.
         
-        Правила (из твоего анализа):
+        Правила (из анализа total_fraud.ipynb):
+        DEVICE/OS RULES:
         - rare_os_flag = 1            → +2 балла
         - rare_device_flag = 1        → +2 балла
         - suspicious_device_combo = 1 → +2 балла
         - high_device_volatility = 1  → +1 балл
         - high_login_volatility = 1   → +1 балл
+        
+        LOGIN FREQUENCY RULES (NEW - based on data analysis):
+        - freq_change_suspicious = 1  → +2 балла (резкий рост частоты логинов)
+        - large_login_interval = 1    → +2 балла (большой интервал между логинами)
+        - low_login_activity = 1      → +1 балл  (мало логинов за 7 дней)
+        - high_login_ratio = 1        → +1 балл  (высокая доля 7d/30d)
         """
         df = df.copy()
+        
+        # =====================================================================
+        # DEVICE/OS RULES (existing)
+        # =====================================================================
         
         # 1. Rare OS (< 1% транзакций)
         if 'last_os_ver' in df.columns:
@@ -73,7 +84,7 @@ class ScorecardFilter:
         # 4. Suspicious Device Combo
         df['suspicious_device_combo'] = df['rare_device_flag'] * df['high_device_volatility']
         
-        # 5. High Login Volatility
+        # 5. High Login Volatility (burstiness)
         if 'login_volatility_factor' in df.columns:
             login_vol_threshold = df['login_volatility_factor'].quantile(0.80)
             df['high_login_volatility'] = (
@@ -82,13 +93,136 @@ class ScorecardFilter:
         else:
             df['high_login_volatility'] = 0
         
-        # 6. TOTAL SCORECARD SCORE
+        # =====================================================================
+        # LOGIN FREQUENCY RULES (NEW - based on data analysis)
+        # =====================================================================
+        
+        # 6. Резкий рост частоты логинов (fraud mean +98% vs non-fraud)
+        # rel_freq_change_7_30d > 1.0 ловит 23.6% fraud при 14% FP
+        if 'rel_freq_change_7_30d' in df.columns:
+            df['rel_freq_change_7_30d'] = pd.to_numeric(df['rel_freq_change_7_30d'], errors='coerce').fillna(0)
+            df['freq_change_suspicious'] = (df['rel_freq_change_7_30d'] > 1.0).astype(int)
+        else:
+            df['freq_change_suspicious'] = 0
+        
+        # 7. Большой интервал между логинами (fraud mean +57% vs non-fraud)
+        # avg_login_interval > 200000 ловит 13.9% fraud при 8.7% FP
+        if 'avg_login_interval' in df.columns:
+            df['avg_login_interval'] = pd.to_numeric(df['avg_login_interval'], errors='coerce').fillna(0)
+            df['large_login_interval'] = (df['avg_login_interval'] > 200000).astype(int)
+        else:
+            df['large_login_interval'] = 0
+        
+        # 8. Мало логинов за 7 дней (fraud mean -13% vs non-fraud)
+        # logins_7d < 3 ловит 20.6% fraud при 15.8% FP
+        if 'logins_7d' in df.columns:
+            df['logins_7d'] = pd.to_numeric(df['logins_7d'], errors='coerce').fillna(0)
+            df['low_login_activity'] = (df['logins_7d'] < 3).astype(int)
+        else:
+            df['low_login_activity'] = 0
+        
+        # 9. Высокая доля логинов 7d/30d (fraud mean +19% vs non-fraud)
+        # login_share_7_30d > 0.5 — активность сконцентрирована недавно
+        if 'login_share_7_30d' in df.columns:
+            df['login_share_7_30d'] = pd.to_numeric(df['login_share_7_30d'], errors='coerce').fillna(0)
+            df['high_login_ratio'] = (df['login_share_7_30d'] > 0.5).astype(int)
+        else:
+            df['high_login_ratio'] = 0
+        
+        # =====================================================================
+        # AMOUNT & TRANSACTION RULES (NEW - catches remaining 46 fraudsters)
+        # =====================================================================
+        
+        # 10. Большая сумма транзакции (снизили порог: 75k ловит 28% при 15% FP)
+        if 'amount' in df.columns:
+            df['amount'] = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+            df['high_amount_flag'] = (df['amount'] > 75000).astype(int)
+        else:
+            df['high_amount_flag'] = 0
+        
+        # 11. Fast bot (ловит 28.3% пропущенных при всего 3.1% FP!)
+        if 'is_fast_bot' in df.columns:
+            df['is_fast_bot'] = pd.to_numeric(df['is_fast_bot'], errors='coerce').fillna(0)
+            df['fast_bot_flag'] = (df['is_fast_bot'] == 1).astype(int)
+        else:
+            df['fast_bot_flag'] = 0
+        
+        # 12. Сумма выше средней по клиенту (снизили порог: 1.8x ловит 19% при 14% FP)
+        if 'amount_to_avg_ratio' in df.columns:
+            df['amount_to_avg_ratio'] = pd.to_numeric(df['amount_to_avg_ratio'], errors='coerce').fillna(0)
+            df['unusual_amount_flag'] = (df['amount_to_avg_ratio'] > 1.8).astype(int)
+        else:
+            df['unusual_amount_flag'] = 0
+        
+        # 13. Очень низкая активность недавно (ловит 58.7% пропущенных)
+        if 'login_share_7_30d' in df.columns:
+            df['very_low_recent_activity'] = (df['login_share_7_30d'] < 0.15).astype(int)
+        else:
+            df['very_low_recent_activity'] = 0
+        
+        # =====================================================================
+        # NEW RULES FOR BETTER RECALL (catches scorecard-missed fraud)
+        # =====================================================================
+        
+        # 14. Ночная транзакция (0-6 часов) - повышенный риск
+        if 'is_night_transaction' in df.columns:
+            df['night_tx_flag'] = pd.to_numeric(df['is_night_transaction'], errors='coerce').fillna(0).astype(int)
+        elif 'hour' in df.columns:
+            hour = pd.to_numeric(df['hour'], errors='coerce').fillna(12)
+            df['night_tx_flag'] = ((hour >= 0) & (hour <= 6)).astype(int)
+        else:
+            df['night_tx_flag'] = 0
+        
+        # 15. Device hopper - частая смена устройств
+        if 'is_device_hopper' in df.columns:
+            df['device_hopper_flag'] = pd.to_numeric(df['is_device_hopper'], errors='coerce').fillna(0).astype(int)
+        elif 'device_count_30d' in df.columns:
+            device_count = pd.to_numeric(df['device_count_30d'], errors='coerce').fillna(1)
+            df['device_hopper_flag'] = (device_count > 1).astype(int)
+        else:
+            df['device_hopper_flag'] = 0
+        
+        # 16. Login burst - резкий всплеск активности
+        if 'is_login_burst' in df.columns:
+            df['login_burst_flag'] = pd.to_numeric(df['is_login_burst'], errors='coerce').fillna(0).astype(int)
+        else:
+            df['login_burst_flag'] = 0
+        
+        # 17. Высокая сумма (90-й перцентиль)
+        if 'is_high_amount' in df.columns:
+            df['high_amount_p90_flag'] = pd.to_numeric(df['is_high_amount'], errors='coerce').fillna(0).astype(int)
+        else:
+            df['high_amount_p90_flag'] = 0
+        
+        # 18. Комбо: ночь + высокая сумма (очень подозрительно!)
+        df['night_high_amount_combo'] = (df['night_tx_flag'] * df.get('high_amount_flag', 0)).astype(int)
+        
+        # =====================================================================
+        # TOTAL SCORECARD SCORE (UPDATED)
+        # =====================================================================
         df['scorecard_total'] = (
+            # Device/OS rules
             df['rare_os_flag'] * 2 +
             df['rare_device_flag'] * 2 +
             df['suspicious_device_combo'] * 2 +
             df['high_device_volatility'] * 1 +
-            df['high_login_volatility'] * 1
+            df['high_login_volatility'] * 1 +
+            # Login frequency rules
+            df['freq_change_suspicious'] * 2 +
+            df['large_login_interval'] * 2 +
+            df['low_login_activity'] * 1 +
+            df['high_login_ratio'] * 1 +
+            # Amount & transaction rules
+            df['high_amount_flag'] * 2 +
+            df['fast_bot_flag'] * 3 +  # Высокий вес - низкий FP!
+            df['unusual_amount_flag'] * 2 +
+            df['very_low_recent_activity'] * 1 +
+            # NEW rules for better recall
+            df['night_tx_flag'] * 1 +
+            df['device_hopper_flag'] * 1 +
+            df['login_burst_flag'] * 2 +
+            df['high_amount_p90_flag'] * 1 +
+            df['night_high_amount_combo'] * 2  # Комбо-правило
         )
         
         return df
@@ -260,18 +394,22 @@ class TwoStageDetector:
 
 if __name__ == '__main__':
     # Пример использования
-    from preprocessing import load_data, clean_and_merge
+    from preprocessing import load_data, clean_and_merge, preprocess
     from train_catboost import engineer_features
     
     print("Loading data...")
     df_trans, df_behavior = load_data()
     df = clean_and_merge(df_trans, df_behavior)
     
+    print("Preprocessing (adding derived features)...")
+    df = preprocess(df)
+    
     print("Engineering features...")
     df = engineer_features(df)
     
-    # Двухэтапная детекция
-    detector = TwoStageDetector(scorecard_threshold_low=1)  # Понизили с 2 до 1
+    # Двухэтапная детекция с более строгим порогом для recall
+    # Скор ≤1 = auto-approve (только самые безопасные)
+    detector = TwoStageDetector(scorecard_threshold_low=1)
     results = detector.detect_fraud(df)
     
     # Сохранение результатов

@@ -21,9 +21,19 @@ from sklearn.metrics import (
     roc_auc_score,
 )
 import config  # src/config.py
-from feature_utils import add_composite_features
 
 warnings.filterwarnings('ignore')
+
+# ---------------------------------------------------------------------------
+# Composite feature helper (was in feature_utils.py)
+# ---------------------------------------------------------------------------
+def add_composite_features(df):
+    """Placeholder for future composite features.
+    
+    Currently returns DataFrame unchanged.
+    CatBoost finds better patterns automatically without manual rules.
+    """
+    return df
 
 # Determine task_type based on GPU availability and config
 def get_task_type():

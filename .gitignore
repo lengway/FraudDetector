@@ -1,7 +1,26 @@
+# IDE
 .idea
+.vscode
+
+# Virtual environments
 .venv
-__pycache__
 venv
-catboost_fraud_detection.ipynb
-catboost_info
-innovatex
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+
+# CatBoost temp files
+catboost_info/
+
+# Other projects
+innovatex/
+
+# Model artifacts (keep in models/)
+*.cbm
+!models/*.cbm
+
+# Temporary files
+*.tmp
+*.log
