@@ -1,15 +1,3 @@
-"""
-Two-Stage Fraud Detection Pipeline
-===================================
-
-Stage 1: Scorecard (Rule-based fast filter)
-Stage 2: ML Model (Deep analysis for suspicious cases)
-
-Архитектура:
-    Transaction → Scorecard → Low risk? → APPROVE
-                           → High risk? → ML Model → FRAUD/NOT_FRAUD
-"""
-
 import pandas as pd
 import numpy as np
 from typing import Dict, Tuple

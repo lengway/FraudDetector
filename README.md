@@ -61,6 +61,43 @@ python src/two_stage_detector.py
 Результаты:
 - `docs/two_stage_detection_results.csv` — результаты детекции
 
+### FastAPI сервис
+
+**Инициализация базы данных:**
+```bash
+python src/init_db.py
+```
+Создаёт SQLite базу `data/transactions.db` с 13,140 транзакциями и всеми признаками.
+
+**Запуск сервера:**
+```bash
+python -m uvicorn src.api:app --host 0.0.0.0 --port 8000
+```
+
+При старте автоматически проверяет все транзакции и находит фроды.
+
+**Эндпоинты:**
+| Метод | URL | Описание |
+|-------|-----|----------|
+| GET | `/` | Статус сервиса |
+| GET | `/frauds` | Список найденных фродов |
+| GET | `/stats` | Статистика проверок |
+| POST | `/check_now` | Мгновенная проверка новых транзакций |
+| POST | `/reset` | Сброс статуса проверки (для демо) |
+
+**Swagger UI:** http://localhost:8000/docs
+
+**Пример ответа `/stats`:**
+```json
+{
+  "total_transactions": 13140,
+  "checked": 13140,
+  "fraud_detected": 171,
+  "actual_fraud_in_data": 165,
+  "threshold": 0.80
+}
+```
+
 ### Дообучение модели
 
 ```bash
@@ -95,11 +132,15 @@ FraudDetector/
 │   ├── config.py             # настройки порогов
 │   ├── retrain.py            # дообучение
 │   ├── benchmark.py          # тест скорости
-│   └── cv_stability.py       # кросс-валидация
+│   ├── cv_stability.py       # кросс-валидация
+│   ├── api.py                # FastAPI сервис
+│   └── init_db.py            # инициализация БД
 ├── models/
 │   ├── catboost_fraud_model.cbm
 │   ├── feature_names.pkl
 │   └── model_metrics.txt
+├── data/
+│   └── transactions.db       # SQLite база данных
 ├── docs/
 │   └── two_stage_detection_results.csv
 └── notebooks/

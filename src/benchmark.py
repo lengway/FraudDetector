@@ -1,7 +1,3 @@
-"""
-benchmark скорости обработки транзакций
-"""
-
 import time
 import sys
 import os

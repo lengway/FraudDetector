@@ -1,8 +1,3 @@
-"""
-CatBoost Fraud Detection - Hybrid Version
-ForteBank Hackathon - Optimized for F1-Score (Best Balance of Precision and Recall)
-"""
-
 import os
 import warnings
 import itertools
