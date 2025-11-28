@@ -30,8 +30,7 @@ plt.rcParams['axes.labelsize'] = 12
 def load_results():
     """Загрузка результатов детекции."""
     df = pd.read_csv('docs/two_stage_detection_results.csv')
-    print(f"✅ Loaded {len(df)} transactions")
-    print(f"   Fraud rate: {df['target'].mean()*100:.2f}%")
+    print(f"loaded {len(df)} transactions, fraud rate: {df['target'].mean()*100:.2f}%")
     return df
 
 
@@ -102,9 +101,8 @@ def plot_confusion_matrix(df, save_path='docs/confusion_matrix.png'):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Confusion Matrix saved to '{save_path}'")
-    print(f"   TP: {tp}, FP: {fp}, FN: {fn}, TN: {tn}")
-    print(f"   Recall: {recall:.1%}, Precision: {precision:.1%}, F1: {f1:.1%}")
+    print(f"confusion matrix saved to '{save_path}'")
+    print(f"TP: {tp}, FP: {fp}, FN: {fn}, TN: {tn}, recall: {recall:.1%}")
     
     return cm
 
@@ -175,9 +173,7 @@ def plot_roc_curve(save_path='docs/roc_curve.png'):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     
-    print(f"✅ ROC Curve saved to '{save_path}'")
-    print(f"   AUC-ROC: {roc_auc:.4f}")
-    print(f"   Optimal threshold: {optimal_threshold:.3f}")
+    print(f"roc curve saved to '{save_path}', auc: {roc_auc:.4f}")
     
     return roc_auc
 
@@ -223,10 +219,7 @@ def plot_feature_importance(top_n=15, save_path='docs/feature_importance.png'):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Feature Importance chart saved to '{save_path}'")
-    print(f"   Top 3 features:")
-    for i, row in feature_importance.tail(3).iloc[::-1].iterrows():
-        print(f"      {row['feature']}: {row['importance']:.2f}%")
+    print(f"feature importance saved to '{save_path}'")
     
     return feature_importance
 
@@ -282,7 +275,7 @@ def plot_score_distribution(save_path='docs/score_distribution.png'):
     plt.savefig(save_path, dpi=150, bbox_inches='tight')
     plt.close()
     
-    print(f"✅ Score Distribution saved to '{save_path}'")
+    print(f"score distribution saved to '{save_path}'")
 
 
 def create_summary_dashboard(save_path='docs/fraud_detection_dashboard.png'):
@@ -372,18 +365,18 @@ def create_summary_dashboard(save_path='docs/fraud_detection_dashboard.png'):
         f"═══════════════════════════════════\n"
         f"    FRAUD DETECTION METRICS\n"
         f"═══════════════════════════════════\n\n"
-        f"  📊 Dataset Statistics:\n"
+        f"  Dataset Statistics:\n"
         f"     • Total Transactions: {len(df):,}\n"
         f"     • Fraud Cases: {int(df['target'].sum()):,} ({df['target'].mean()*100:.2f}%)\n\n"
-        f"  🎯 Model Performance:\n"
+        f"  Model Performance:\n"
         f"     • Recall: {recall:.1%} (caught {tp} of {tp+fn} frauds)\n"
         f"     • Precision: {precision:.1%}\n"
         f"     • F1 Score: {f1:.1%}\n"
         f"     • AUC-ROC: {roc_auc:.3f}\n\n"
-        f"  ⚠️ Error Analysis:\n"
+        f"  Error Analysis:\n"
         f"     • False Positives: {fp} (false alarms)\n"
         f"     • False Negatives: {fn} (missed frauds)\n\n"
-        f"  🏗️ Architecture:\n"
+        f"  Architecture:\n"
         f"     • Stage 1: Scorecard (25 rules)\n"
         f"     • Stage 2: CatBoost ML ({len(feature_names)} features)\n"
         f"═══════════════════════════════════"
@@ -400,46 +393,31 @@ def create_summary_dashboard(save_path='docs/fraud_detection_dashboard.png'):
     plt.savefig(save_path, dpi=150, bbox_inches='tight', facecolor='white')
     plt.close()
     
-    print(f"✅ Dashboard saved to '{save_path}'")
+    print(f"dashboard saved to '{save_path}'")
 
 
 def main():
-    """Генерация всех визуализаций."""
-    print("\n" + "="*60)
-    print("📊 GENERATING VISUALIZATIONS")
-    print("="*60 + "\n")
+    """Generate all visualizations."""
+    print("generating visualizations...")
     
-    # Загрузка данных
     df = load_results()
     
-    # 1. Confusion Matrix
-    print("\n1️⃣ Generating Confusion Matrix...")
+    print("1. confusion matrix...")
     plot_confusion_matrix(df)
     
-    # 2. ROC Curve
-    print("\n2️⃣ Generating ROC Curve...")
+    print("2. roc curve...")
     plot_roc_curve()
     
-    # 3. Feature Importance
-    print("\n3️⃣ Generating Feature Importance...")
+    print("3. feature importance...")
     plot_feature_importance()
     
-    # 4. Score Distribution
-    print("\n4️⃣ Generating Score Distribution...")
+    print("4. score distribution...")
     plot_score_distribution()
     
-    # 5. Summary Dashboard
-    print("\n5️⃣ Generating Summary Dashboard...")
+    print("5. dashboard...")
     create_summary_dashboard()
     
-    print("\n" + "="*60)
-    print("✅ ALL VISUALIZATIONS GENERATED!")
-    print("="*60)
-    print("\nFiles saved in 'docs/' folder:")
-    print("  • confusion_matrix.png")
-    print("  • roc_curve.png")
-    print("  • feature_importance.png")
-    print("  • score_distribution.png")
+    print("all visualizations saved to docs/")
     print("  • fraud_detection_dashboard.png (MAIN)")
     print("="*60)
 

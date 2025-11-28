@@ -24,11 +24,18 @@ THRESHOLDS = {
 # ML model prediction threshold (higher = fewer FP, lower recall)
 ML_PREDICTION_THRESHOLD = 0.80  # TP:155, FP:16, FN:10
 
-# Scorecard threshold: score <= this value = AUTO APPROVE
-# Set to -1 to send ALL transactions to ML (maximum recall)
-# Set to 0 to approve only score=0 (high recall)
-# Set to 1 to approve score 0-1 (balanced)
-SCORECARD_THRESHOLD = -1  # Send EVERYTHING to ML for max recall
+# =============================================================================
+# SCORECARD THRESHOLD OPTIONS
+# =============================================================================
+# Вариант 1: Всё в ML (максимальный recall)
+#   SCORECARD_THRESHOLD = -1
+#   Auto-approve: 0% | TP:155 | FP:16 | FN:10 | Recall: 93.9%
+#
+# Вариант 2: Экономия ресурсов (scorecard фильтрует 13.5%)
+#   SCORECARD_THRESHOLD = 1
+#   Auto-approve: 13.5% | TP:152 | FP:16 | FN:13 | Recall: 92.1%
+# =============================================================================
+SCORECARD_THRESHOLD = -1  # Вариант 1: максимальный recall
 
 # Metrics targets
 METRIC_TARGETS = {

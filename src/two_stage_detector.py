@@ -199,6 +199,49 @@ class ScorecardFilter:
         df['night_high_amount_combo'] = (df['night_tx_flag'] * df.get('high_amount_flag', 0)).astype(int)
         
         # =====================================================================
+        # NEW RULES FOR "QUIET" FRAUD (catches low-score fraudsters)
+        # These are frauds that look normal but have subtle differences
+        # =====================================================================
+        
+        # 19. Снижение активности + сумма выше среднего (fraud=-0.28 vs normal=0.14)
+        if 'freq_change_7d_vs_mean' in df.columns:
+            freq_change = pd.to_numeric(df['freq_change_7d_vs_mean'], errors='coerce').fillna(0)
+            df['activity_decline_flag'] = (freq_change < -0.15).astype(int)
+        else:
+            df['activity_decline_flag'] = 0
+        
+        # 20. Низкий ratio 7d/30d (fraud=0.17 vs normal=0.26) - давно не заходил
+        if 'logins_7d_over_30d_ratio' in df.columns:
+            ratio = pd.to_numeric(df['logins_7d_over_30d_ratio'], errors='coerce').fillna(0)
+            df['low_recent_ratio_flag'] = (ratio < 0.18).astype(int)
+        else:
+            df['low_recent_ratio_flag'] = 0
+        
+        # 21. Высокий ewm интервал (fraud=94K vs normal=47K) - долго не было активности
+        if 'ewm_login_interval_7d' in df.columns:
+            ewm = pd.to_numeric(df['ewm_login_interval_7d'], errors='coerce').fillna(0)
+            df['high_ewm_interval_flag'] = (ewm > 70000).astype(int)
+        else:
+            df['high_ewm_interval_flag'] = 0
+        
+        # 22. Положительный zscore интервала (fraud=0.24 vs normal=-0.07)
+        if 'zscore_avg_login_interval_7d' in df.columns:
+            zscore = pd.to_numeric(df['zscore_avg_login_interval_7d'], errors='coerce').fillna(0)
+            df['positive_zscore_flag'] = (zscore > 0.15).astype(int)
+        else:
+            df['positive_zscore_flag'] = 0
+        
+        # 23. Комбо: снижение активности + сумма > 15K (ловит quiet fraud)
+        if 'amount' in df.columns:
+            amount = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
+            df['quiet_fraud_combo'] = (
+                (df['activity_decline_flag'] == 1) & 
+                (amount > 15000)
+            ).astype(int)
+        else:
+            df['quiet_fraud_combo'] = 0
+        
+        # =====================================================================
         # TOTAL SCORECARD SCORE (UPDATED)
         # =====================================================================
         df['scorecard_total'] = (
@@ -223,7 +266,13 @@ class ScorecardFilter:
             df['device_hopper_flag'] * 1 +
             df['login_burst_flag'] * 2 +
             df['high_amount_p90_flag'] * 1 +
-            df['night_high_amount_combo'] * 2  # Комбо-правило
+            df['night_high_amount_combo'] * 2 +  # Комбо-правило
+            # NEW: Quiet fraud detection rules
+            df['activity_decline_flag'] * 1 +
+            df['low_recent_ratio_flag'] * 1 +
+            df['high_ewm_interval_flag'] * 1 +
+            df['positive_zscore_flag'] * 1 +
+            df['quiet_fraud_combo'] * 2  # Комбо для тихого фрода
         )
         
         return df
@@ -249,10 +298,10 @@ class ScorecardFilter:
             'ml_check_rate': len(needs_ml_check) / len(df_scored) * 100
         }
         
-        print(f"\n📊 SCORECARD FILTER RESULTS:")
-        print(f"   Total transactions: {stats['total']}")
-        print(f"   ✅ Auto-approved: {stats['auto_approve']} ({stats['approve_rate']:.1f}%)")
-        print(f"   🔍 Needs ML check: {stats['needs_ml_check']} ({stats['ml_check_rate']:.1f}%)")
+        print(f"\nscorecard filter results:")
+        print(f"   total: {stats['total']}")
+        print(f"   auto-approved: {stats['auto_approve']} ({stats['approve_rate']:.1f}%)")
+        print(f"   needs ml: {stats['needs_ml_check']} ({stats['ml_check_rate']:.1f}%)")
         
         return auto_approve, needs_ml_check, df_scored
 
@@ -269,8 +318,8 @@ class MLModelDetector:
         with open(feature_names_path, 'rb') as f:
             self.feature_names = pickle.load(f)
         
-        print(f"✅ ML Model loaded: {model_path}")
-        print(f"   Features: {len(self.feature_names)}")
+        print(f"ml model loaded: {model_path}")
+        print(f"   features: {len(self.feature_names)}")
     
     def predict(self, df: pd.DataFrame) -> pd.DataFrame:
         """Предсказание фрода для подозрительных транзакций.
@@ -283,7 +332,7 @@ class MLModelDetector:
         # Проверка наличия всех нужных фичей
         missing_features = set(self.feature_names) - set(df.columns)
         if missing_features:
-            print(f"⚠️ Warning: Missing features: {missing_features}")
+            print(f"warning: missing features: {missing_features}")
             for feat in missing_features:
                 df[feat] = 0
         
@@ -329,11 +378,11 @@ class TwoStageDetector:
             DataFrame со всеми результатами и финальным решением
         """
         print("\n" + "="*60)
-        print("🚀 TWO-STAGE FRAUD DETECTION PIPELINE")
+        print("two-stage fraud detection")
         print("="*60)
         
-        # STAGE 1: Scorecard фильтр
-        print("\n📋 STAGE 1: Scorecard Filter...")
+        # stage 1: scorecard
+        print("\nstage 1: scorecard...")
         auto_approve, needs_ml, df_scored = self.scorecard.filter_transactions(df)
         
         # Для авто-одобренных: fraud_probability = 0
@@ -343,17 +392,16 @@ class TwoStageDetector:
         auto_approve['detection_stage'] = 'scorecard'
         
         if len(needs_ml) == 0:
-            print("\n✅ All transactions auto-approved by scorecard!")
+            print("\nall transactions auto-approved by scorecard")
             return auto_approve
         
-        # STAGE 2: ML Model для подозрительных
-        print(f"\n🤖 STAGE 2: ML Model Analysis ({len(needs_ml)} transactions)...")
+        # stage 2: ml model
+        print(f"\nstage 2: ml model ({len(needs_ml)} transactions)...")
         needs_ml_analyzed = self.ml_model.predict(needs_ml)
         needs_ml_analyzed['detection_stage'] = 'ml_model'
         
-        # Детальная статистика по ML-проверенным
-        print(f"\n🔍 ML CHECK DETAILS:")
-        print(f"   Analyzed: {len(needs_ml_analyzed)} suspicious transactions")
+        print(f"\nml check details:")
+        print(f"   analyzed: {len(needs_ml_analyzed)} suspicious transactions")
         if 'target' in needs_ml_analyzed.columns:
             # Если есть истинные метки (для анализа)
             actual_fraud = needs_ml_analyzed['target'].sum()
@@ -384,10 +432,10 @@ class TwoStageDetector:
         fraud_count = final_results['fraud_prediction'].sum()
         fraud_rate = fraud_count / len(final_results) * 100
         
-        print(f"\n📊 FINAL RESULTS:")
-        print(f"   Total transactions: {len(final_results)}")
-        print(f"   Fraud detected: {fraud_count} ({fraud_rate:.2f}%)")
-        print(f"   Risk breakdown:")
+        print(f"\nfinal results:")
+        print(f"   total: {len(final_results)}")
+        print(f"   fraud detected: {fraud_count} ({fraud_rate:.2f}%)")
+        print(f"   risk breakdown:")
         print(final_results['risk_level'].value_counts().to_string())
         print("="*60)
         
@@ -418,10 +466,10 @@ if __name__ == '__main__':
     
     # Сохранение результатов
     results.to_csv('docs/two_stage_detection_results.csv', index=False)
-    print("\n✅ All results saved to 'docs/two_stage_detection_results.csv'")
+    print("\nresults saved to docs/two_stage_detection_results.csv")
     
     # Сохранение ML-проверенных транзакций отдельно для анализа
     if hasattr(detector, 'ml_checked_transactions'):
         ml_checked = detector.ml_checked_transactions
         ml_checked.to_csv('docs/ml_checked_transactions.csv', index=False)
-        print(f"✅ ML-checked transactions saved to 'docs/ml_checked_transactions.csv' ({len(ml_checked)} rows)")
+        print(f"ml-checked saved to docs/ml_checked_transactions.csv ({len(ml_checked)} rows)")

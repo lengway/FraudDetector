@@ -1,6 +1,6 @@
 Model Training Report
 ============================================================
-Training Date: 2025-11-28 01:15:13.798545
+Training Date: 2025-11-28 02:27:16.401160
 Dataset Shape: (13140, 39)
 Features Used: 34
 Class Distribution: {0: np.int64(12975), 1: np.int64(165)}
@@ -12,6 +12,8 @@ Performance Metrics:
   Precision:  0.8571
   Recall:     0.5455
   F1-Score:   0.6667
+  F2-Score:   0.5882 (β=2, recall-weighted)
+  F0.5-Score: 0.7692 (β=0.5, precision-weighted)
 
 Confusion Matrix:
   TN:  2592  |  FP:     3

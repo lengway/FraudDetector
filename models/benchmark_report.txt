@@ -1,0 +1,11 @@
+benchmark report
+================
+throughput: 36,137 tx/sec
+latency: 0.0277 ms/tx
+real-time: yes
+
+breakdown (batch=1000):
+- feature eng: 0.00 ms
+- scorecard: 22.21 ms  
+- ml: 4.20 ms
+- total: 27.67 ms

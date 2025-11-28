@@ -34,7 +34,7 @@ def load_data(base_path='docs'):
     Raises:
         FileNotFoundError: If CSV files are not found
     """
-    print("📊 Loading data...")
+    print("loading data...")
     
     # Try different paths
     trans_paths = [
@@ -60,10 +60,10 @@ def load_data(base_path='docs'):
                     engine='python',
                 )
                 df_trans = clean_columns(df_trans)
-                print(f"✓ Loaded transactions from {path} (shape: {df_trans.shape})")
+                print(f"loaded transactions from {path} (shape: {df_trans.shape})")
                 break
             except Exception as e:
-                print(f"⚠️ Failed to load {path}: {e}")
+                print(f"failed to load {path}: {e}")
                 continue
     
     if df_trans is None:
@@ -83,10 +83,10 @@ def load_data(base_path='docs'):
                     on_bad_lines='skip',
                 )
                 df_behavior = clean_columns(df_behavior)
-                print(f"✓ Loaded behavioral data from {path} (shape: {df_behavior.shape})")
+                print(f"loaded behavioral data from {path} (shape: {df_behavior.shape})")
                 break
             except Exception as e:
-                print(f"⚠️ Failed to load {path}: {e}")
+                print(f"failed to load {path}: {e}")
                 continue
     
     if df_behavior is None:
@@ -106,7 +106,7 @@ def clean_and_merge(df_trans, df_behavior):
     Returns:
         pd.DataFrame: Merged and cleaned dataset
     """
-    print("🔧 Cleaning and merging data...")
+    print("cleaning and merging data...")
     
     # header=1 gives English column names directly - no rename needed!
     
@@ -147,7 +147,7 @@ def clean_and_merge(df_trans, df_behavior):
             )
     
     # Merge datasets
-    print("🔗 Merging datasets...")
+    print("merging datasets...")
     df = df_trans.merge(df_behavior, on=['cst_dim_id', 'transdate'], how='left')
     
     # Fill categorical NaNs (using header=1 column names)
@@ -165,7 +165,7 @@ def clean_and_merge(df_trans, df_behavior):
             )
     
     df.fillna(0, inplace=True)
-    print(f"✓ Dataset ready: {df.shape}, Fraud rate: {df['target'].mean()*100:.2f}%")
+    print(f"dataset ready: {df.shape}, fraud rate: {df['target'].mean()*100:.2f}%")
     
     return df
 
@@ -181,7 +181,7 @@ def add_derived_features(df):
     Returns:
         pd.DataFrame: DataFrame with additional features
     """
-    print("🔧 Adding derived features...")
+    print("adding derived features...")
     df = df.copy()
     
     # =========================================================================
@@ -194,7 +194,6 @@ def add_derived_features(df):
             df['monthly_phone_model_changes'] = device_counts
         else:
             df['monthly_phone_model_changes'] = 1
-        print("   ✓ Added monthly_phone_model_changes")
     
     # =========================================================================
     # 2. login_volatility_factor - (std - mean) / (std + mean) for intervals
@@ -212,7 +211,6 @@ def add_derived_features(df):
             )
         else:
             df['burstiness_login_interval'] = 0
-        print("   ✓ Added burstiness_login_interval")
     
     # =========================================================================
     # 3. is_device_hopper - frequent device changes (>1 in 30 days)
@@ -220,7 +218,6 @@ def add_derived_features(df):
     if 'is_device_hopper' not in df.columns:
         device_count = pd.to_numeric(df.get('monthly_phone_model_changes', 1), errors='coerce').fillna(1)
         df['is_device_hopper'] = (device_count > 1).astype(int)
-        print("   ✓ Added is_device_hopper")
     
     # =========================================================================
     # 4. BONUS: Additional features for better recall
@@ -232,7 +229,6 @@ def add_derived_features(df):
         df['is_rare_device'] = df['last_phone_model_categorical'].map(
             lambda x: 1 if device_freq.get(x, 0) < 0.01 else 0
         )
-        print("   ✓ Added is_rare_device")
     
     # 4b. login_burst - sudden activity spike (7d >> 30d average)
     if 'logins_last_7_days' in df.columns and 'logins_last_30_days' in df.columns:
@@ -244,22 +240,19 @@ def add_derived_features(df):
             logins_7d / avg_7d_expected,
             0
         )
-        df['is_login_burst'] = (df['login_burst'] > 2.0).astype(int)  # 2x нормы
-        print("   ✓ Added login_burst, is_login_burst")
+        df['is_login_burst'] = (df['login_burst'] > 2.0).astype(int)
     
     # 4c. is_high_amount - сумма выше 90-го перцентиля
     if 'amount' in df.columns:
         amount = pd.to_numeric(df['amount'], errors='coerce').fillna(0)
         p90 = amount.quantile(0.90)
         df['is_high_amount'] = (amount > p90).astype(int)
-        print(f"   ✓ Added is_high_amount (threshold: {p90:,.0f})")
     
     # 4d. suspicious_time - транзакция в подозрительное время (ночь 0-6)
     if 'transdatetime' in df.columns:
         df['transdatetime'] = pd.to_datetime(df['transdatetime'].astype(str).str.strip("'"), errors='coerce')
         df['hour'] = df['transdatetime'].dt.hour.fillna(12).astype(int)
         df['is_night_transaction'] = ((df['hour'] >= 0) & (df['hour'] <= 6)).astype(int)
-        print("   ✓ Added hour, is_night_transaction")
     
     # 4e. device_os_mismatch - несовпадение OS и device (подозрительно)
     if 'last_os_ver' in df.columns and 'last_phone_model' in df.columns:
@@ -267,9 +260,8 @@ def add_derived_features(df):
         is_ios = df['last_os_ver'].astype(str).str.lower().str.contains('ios|iphone', na=False)
         is_android_device = df['last_phone_model'].astype(str).str.lower().str.contains('samsung|xiaomi|huawei|oppo|vivo|realme|poco', na=False)
         df['device_os_mismatch'] = (is_ios & is_android_device).astype(int)
-        print("   ✓ Added device_os_mismatch")
     
-    print(f"✓ Derived features added. New shape: {df.shape}")
+    print(f"derived features added. shape: {df.shape}")
     return df
 
 

@@ -1,13 +1,13 @@
 # IDE
-.idea
-.vscode
+.idea/
+.vscode/
 
 # Virtual environments
-.venv
-venv
+.venv/
+venv/
 
 # Python cache
-__pycache__
+__pycache__/
 *.pyc
 *.pyo
 
@@ -16,11 +16,17 @@ catboost_info/
 
 # Other projects
 innovatex/
+data/
 
-# Model artifacts (keep in models/)
-*.cbm
-!models/*.cbm
+# Model backups (large files)
+models/backup/
 
 # Temporary files
 *.tmp
 *.log
+
+# OS files
+*.md
+!README.md
+.DS_Store
+Thumbs.db

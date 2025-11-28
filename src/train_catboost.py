@@ -19,8 +19,17 @@ from sklearn.metrics import (
     classification_report,
     confusion_matrix,
     roc_auc_score,
+    fbeta_score,
 )
 import config  # src/config.py
+
+# Optional SHAP for interpretability
+try:
+    import shap
+    SHAP_AVAILABLE = True
+except ImportError:
+    SHAP_AVAILABLE = False
+    print("SHAP not installed. Run: pip install shap")
 
 warnings.filterwarnings('ignore')
 
@@ -50,10 +59,10 @@ def get_task_type():
         X_test = np.random.rand(10, 5)
         y_test = np.random.randint(0, 2, 10)
         test_model.fit(X_test, y_test, verbose=False)
-        print("✅ GPU detected and available for training")
+        print("gpu available")
         return 'GPU'
     except Exception as e:
-        print(f"⚠️ GPU requested but not available ({e}), falling back to CPU")
+        print(f"gpu not available ({e}), using cpu")
         return 'CPU'
 
 TASK_TYPE = get_task_type()  # Determine once at module load
@@ -94,7 +103,7 @@ NUMERIC_COLS = [
 # Data loading and cleaning
 # ---------------------------------------------------------------------------
 def load_and_clean_data():
-    print("📊 Loading data...")
+    print("loading data...")
     # Load transactions
     try:
         df_trans = pd.read_csv(
@@ -157,8 +166,7 @@ def load_and_clean_data():
                 df_temp['transdate'].astype(str).str.strip("'"), errors='coerce'
             )
 
-    # Merge datasets
-    print("🔗 Merging datasets...")
+    print("merging datasets...")
     df = df_trans.merge(df_behavior, on=['cst_dim_id', 'transdate'], how='left')
 
     # Fill categorical NaNs (using header=1 column names)
@@ -175,14 +183,14 @@ def load_and_clean_data():
                 .astype(float)
             )
     df.fillna(0, inplace=True)
-    print(f"✅ Dataset ready: {df.shape}, Fraud rate: {df['target'].mean()*100:.2f}%")
+    print(f"dataset ready: {df.shape}, fraud rate: {df['target'].mean()*100:.2f}%")
     return df
 
 # ---------------------------------------------------------------------------
 # Feature engineering (enhanced)
 # ---------------------------------------------------------------------------
 def engineer_features(df):
-    print("\n⚙️ Engineering features...")
+    print("\nengineering features...")
     # Temporal features
     if 'transdatetime' in df.columns:
         df['transdatetime'] = pd.to_datetime(df['transdatetime'].astype(str).str.strip("'"), errors='coerce')
@@ -248,7 +256,7 @@ def engineer_features(df):
 # Training routine with optional grid search
 # ---------------------------------------------------------------------------
 def train_model(df):
-    print("\n🚀 Preparing training...")
+    print("\npreparing training...")
     ignore_cols = ['cst_dim_id', 'transdate', 'transdatetime', 'docno', 'target']
     features = [c for c in df.columns if c not in ignore_cols]
     X = df[features]
@@ -258,12 +266,11 @@ def train_model(df):
         X, y, test_size=0.2, random_state=42, stratify=y
     )
 
-    print("❌ Removing manual Target Encoding. CatBoost will handle native categories.")
     cat_features = ['direction', 'last_phone_model_categorical', 'last_os_categorical']
     cat_features = [c for c in cat_features if c in X_train.columns]
     all_features = X_train.columns.tolist()
     num_features = [f for f in all_features if f not in cat_features]
-    print(f"🛠️ Final numeric cleanup of {len(num_features)} features before CatBoost...")
+    print(f"numeric cleanup of {len(num_features)} features...")
     for col in num_features:
         X_train[col] = pd.to_numeric(X_train[col], errors='coerce').fillna(0).astype(float)
         X_test[col] = pd.to_numeric(X_test[col], errors='coerce').fillna(0).astype(float)
@@ -276,7 +283,7 @@ def train_model(df):
     print(f"Train: {X_train.shape}, Test: {X_test.shape}")
 
     scale_pos_weight = (y_train == 0).sum() / (y_train == 1).sum()
-    print(f"⚖️ scale_pos_weight set to: {scale_pos_weight:.2f}")
+    print(f"scale_pos_weight: {scale_pos_weight:.2f}")
 
     # Hyperparameter tuning with optional Ray Tune integration
     if config.USE_RAY:
@@ -285,7 +292,7 @@ def train_model(df):
             from ray.tune.search.optuna import OptunaSearch
             import ray
             
-            print("🚀 Using Ray Tune for distributed hyperparameter search on GPU")
+            print("using ray tune for hyperparameter search")
             
             # Инициализация Ray по образцу Innovatex
             if not ray.is_initialized():
@@ -306,7 +313,7 @@ def train_model(df):
                     },
                     include_dashboard=False
                 )
-                print(f"✅ Ray initialized: {num_cpus} CPUs, {'1 GPU' if TASK_TYPE == 'GPU' else '0 GPUs'}")
+                print(f"ray initialized: {num_cpus} cpus, {'1 gpu' if TASK_TYPE == 'GPU' else '0 gpus'}")
             
             # Trainable функция которая запускается на Ray workers
             def train_catboost(config_params):
@@ -362,19 +369,19 @@ def train_model(df):
             
             best_params = analysis.get_best_config(metric='f1_score', mode='max')
             ray.shutdown()
-            print(f"🔎 Ray Tune best params: {best_params}")
+            print(f"ray tune best params: {best_params}")
             
         except ImportError as e:
-            print(f"⚠️ Ray not installed ({e}), falling back to grid search")
+            print(f"ray not installed ({e}), falling back to grid search")
             config.USE_RAY = False
         except Exception as e:
-            print(f"⚠️ Ray Tune failed ({e}), falling back to grid search")
+            print(f"ray tune failed ({e}), falling back to grid search")
             if ray.is_initialized():
                 ray.shutdown()
             config.USE_RAY = False
     
     if config.USE_GRID_SEARCH and not config.USE_RAY:
-        print(f"🔍 Running grid search on {TASK_TYPE}...")
+        print(f"running grid search on {TASK_TYPE}...")
         best_score = -1
         best_params = None
         param_grid = config.HYPERPARAM_GRID
@@ -410,7 +417,7 @@ def train_model(df):
             if mean_score > best_score:
                 best_score = mean_score
                 best_params = params
-        print(f"🔎 Grid search best F1: {best_score:.4f} with params {best_params}")
+        print(f"grid search best f1: {best_score:.4f} with params {best_params}")
         model = CatBoostClassifier(
             iterations=best_params.get('iterations', 2000),
             learning_rate=best_params.get('learning_rate', 0.05),
@@ -425,7 +432,7 @@ def train_model(df):
             **GPU_PARAMS
         )
     else:
-        print(f"🎯 Training final model on {TASK_TYPE} without grid search...")
+        print(f"training final model on {TASK_TYPE}...")
         model = CatBoostClassifier(
             iterations=2000,
             learning_rate=0.05,
@@ -455,8 +462,8 @@ def train_model(df):
     print(importance_df.head(10).to_string(index=False))
     print("=" * 60)
 
-    # Threshold optimisation
-    print("\n⚖️ Optimising threshold for max F1...")
+    # threshold optimisation
+    print("\noptimising threshold for max f1...")
     y_prob = model.predict_proba(X_test)[:, 1]
     precisions, recalls, thresholds = precision_recall_curve(y_test, y_prob)
     f1_scores = 2 * (precisions * recalls) / (precisions + recalls)
@@ -467,16 +474,25 @@ def train_model(df):
     best_precision = precision_score(y_test, y_pred)
     best_recall = recall_score(y_test, y_pred)
     best_f1 = f1_score(y_test, y_pred)
-    print(f"✅ New threshold: {best_thresh:.4f} (Precision: {best_precision:.4f}, Recall: {best_recall:.4f}, F1: {best_f1:.4f})")
+    
+    # F-beta scores (β=2 gives more weight to recall - important for fraud detection!)
+    f2_score = fbeta_score(y_test, y_pred, beta=2)
+    f05_score = fbeta_score(y_test, y_pred, beta=0.5)
+    
+    print(f"threshold: {best_thresh:.4f} (prec: {best_precision:.4f}, rec: {best_recall:.4f}, f1: {best_f1:.4f})")
+    print(f"f2: {f2_score:.4f}, f0.5: {f05_score:.4f}")
 
     # Final report
     print("\n" + "=" * 60)
     print("FINAL REPORT (F1‑OPTIMISED)")
     print("=" * 60)
     print(classification_report(y_test, y_pred))
-    print(f"ROC AUC: {roc_auc_score(y_test, y_prob):.4f}")
+    print(f"ROC AUC:   {roc_auc_score(y_test, y_prob):.4f}")
+    print(f"F1-Score:  {best_f1:.4f}")
+    print(f"F2-Score:  {f2_score:.4f} (β=2, recall-weighted)")
+    print(f"F0.5-Score: {f05_score:.4f} (β=0.5, precision-weighted)")
     cm = confusion_matrix(y_test, y_pred)
-    print("Confusion Matrix:")
+    print("\nConfusion Matrix:")
     print(f"TN: {cm[0,0]} | FP: {cm[0,1]} (False alarms)")
     print(f"FN: {cm[1,0]} | TP: {cm[1,1]} (Detected fraud)")
 
@@ -485,8 +501,8 @@ def train_model(df):
     model.save_model('models/catboost_fraud_model.cbm')
     with open('models/feature_names.pkl', 'wb') as f:
         pickle.dump(feature_names.tolist(), f)
-    print("\n💾 Model saved to 'models/catboost_fraud_model.cbm'")
-    print("💾 Feature names saved to 'models/feature_names.pkl'")
+    print("\nmodel saved to models/catboost_fraud_model.cbm")
+    print("feature names saved to models/feature_names.pkl")
     
     # Save detailed metrics report
     metrics_report = f"""Model Training Report
@@ -503,6 +519,8 @@ Performance Metrics:
   Precision:  {best_precision:.4f}
   Recall:     {best_recall:.4f}
   F1-Score:   {best_f1:.4f}
+  F2-Score:   {f2_score:.4f} (β=2, recall-weighted)
+  F0.5-Score: {f05_score:.4f} (β=0.5, precision-weighted)
 
 Confusion Matrix:
   TN: {cm[0,0]:5d}  |  FP: {cm[0,1]:5d}
@@ -514,7 +532,62 @@ Top-10 Most Important Features:
 """
     with open('models/model_metrics.txt', 'w', encoding='utf-8') as f:
         f.write(metrics_report)
-    print("💾 Metrics saved to 'models/model_metrics.txt'")
+    print("metrics saved to models/model_metrics.txt")
+    
+    # SHAP Analysis for interpretability
+    if SHAP_AVAILABLE:
+        print("\n" + "=" * 60)
+        print("SHAP INTERPRETABILITY ANALYSIS")
+        print("=" * 60)
+        try:
+            # Use TreeExplainer for CatBoost (fastest)
+            explainer = shap.TreeExplainer(model)
+            
+            # Calculate SHAP values on test sample (limit to 500 for speed)
+            sample_size = min(500, len(X_test))
+            X_sample = X_test.iloc[:sample_size]
+            shap_values = explainer.shap_values(X_sample)
+            
+            # Global feature importance from SHAP (mean |SHAP|)
+            shap_importance = np.abs(shap_values).mean(axis=0)
+            shap_df = pd.DataFrame({
+                'feature': feature_names,
+                'shap_importance': shap_importance
+            }).sort_values('shap_importance', ascending=False)
+            
+            print("\ntop-10 features by shap:")
+            print(shap_df.head(10).to_string(index=False))
+            
+            # Save SHAP summary plot
+            import matplotlib
+            matplotlib.use('Agg')  # Non-interactive backend
+            import matplotlib.pyplot as plt
+            
+            plt.figure(figsize=(12, 8))
+            shap.summary_plot(shap_values, X_sample, feature_names=feature_names, 
+                              show=False, max_display=15)
+            plt.tight_layout()
+            plt.savefig('models/shap_summary.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            print("shap summary plot saved to models/shap_summary.png")
+            
+            # SHAP bar plot (simpler version)
+            plt.figure(figsize=(10, 8))
+            shap.summary_plot(shap_values, X_sample, feature_names=feature_names,
+                              plot_type="bar", show=False, max_display=15)
+            plt.tight_layout()
+            plt.savefig('models/shap_bar.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            print("shap bar plot saved to models/shap_bar.png")
+            
+            # Save SHAP importance to file
+            shap_df.to_csv('models/shap_importance.csv', index=False)
+            print("shap importance saved to models/shap_importance.csv")
+            
+        except Exception as e:
+            print(f"shap analysis failed: {e}")
+    else:
+        print("\nshap not available, install with: pip install shap")
     
     return model, best_f1, best_precision, best_recall
 
